@@ -1,0 +1,51 @@
+{
+  "name": "proxmox",
+  "description": "Proxmox VE 登录页面",
+  "username_selectors": [
+    {
+      "by": "NAME",
+      "value": "username"
+    },
+    {
+      "by": "ID",
+      "value": "username"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input[autocomplete=\"username\"]"
+    }
+  ],
+  "password_selectors": [
+    {
+      "by": "NAME",
+      "value": "password"
+    },
+    {
+      "by": "ID",
+      "value": "password"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input[type=\"password\"]"
+    }
+  ],
+  "login_button_selectors": [
+    {
+      "by": "XPATH",
+      "value": "//a[contains(@class, 'x-btn') and contains(., 'Login')]"
+    },
+    {
+      "by": "XPATH",
+      "value": "//button[contains(., 'Login')]"
+    },
+    {
+      "by": "XPATH",
+      "value": "//button[contains(., '登录')]"
+    },
+    {
+      "by": "ID",
+      "value": "pvploginbtn"
+    }
+  ],
+  "captcha_selectors": []
+}

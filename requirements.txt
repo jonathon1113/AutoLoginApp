@@ -1,0 +1,22 @@
+# =============================================================================
+# 批量自动化登录工具 —— 运行期依赖
+#
+# 安装：
+#     pip install -r requirements.txt
+#     set PLAYWRIGHT_BROWSERS_PATH=0        # Windows（PowerShell 用 $env:PLAYWRIGHT_BROWSERS_PATH=0）
+#     playwright install chromium            # 下载 Chromium（有头模式，体积约 400MB）
+#
+# 说明：
+# - 本项目**只有 3 个第三方运行期依赖**，其余均为 Python 标准库；
+# - 版本号为本仓库实测通过的版本（Python 3.11.9 / Windows 11 24H2）；
+# - 若使用更高版本的 Python（3.9 ~ 3.13）一般也可直接运行，可自行放宽下界。
+# =============================================================================
+
+# --- 图形界面（PyQt6 原生控件 + 全局 QSS，不依赖 qfluentwidgets）---
+PyQt6==6.11.0
+
+# --- 浏览器自动化内核（Chromium；V5.0 起不再需要 ChromeDriver）---
+playwright==1.64.1
+
+# --- Excel 设备表模板生成与导入 ---
+openpyxl==3.1.5

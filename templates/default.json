@@ -1,0 +1,360 @@
+{
+  "name": "default",
+  "description": "内置通用登录模板（未指定模板或设备模板失败时回退使用）",
+  "username_selectors": [
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input[autocomplete=\"username\"]"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input[type=\"email\"]"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input[name=\"username\"]"
+    },
+    {
+      "by": "NAME",
+      "value": "username"
+    },
+    {
+      "by": "ID",
+      "value": "username"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input[autocomplete=\"email\"]"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input[name=\"email\"]"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input[id=\"email\"]"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input[name=\"user\"]"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input[name=\"userName\"]"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input[id=\"user\"]"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input[name=\"account\"]"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input[id=\"account\"]"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input.q-input__inner[type=\"text\"][placeholder=\"请输入用户名\"]"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input.q-input__inner[placeholder=\"请输入用户名\"]"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input.q-input__inner[placeholder=\"用户名\"]"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input[id=\"form.userID\"]"
+    },
+    {
+      "by": "ID",
+      "value": "form.userID"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input[name=\"loginName\"]"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input.username[placeholder=\"请输入用户名\"]"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input#UserName"
+    },
+    {
+      "by": "NAME",
+      "value": "UserName"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input#loginName"
+    },
+    {
+      "by": "NAME",
+      "value": "loginName"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input[formcontrolname=\"username\"]"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input[placeholder=\"用户名\"]"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input[placeholder=\"请输入用户名\"]"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input[placeholder=\"账号\"]"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input[placeholder=\"邮箱\"]"
+    },
+    {
+      "by": "XPATH",
+      "value": "//input[contains(@placeholder, '邮箱')]"
+    },
+    {
+      "by": "XPATH",
+      "value": "//input[contains(@placeholder, '用户')]"
+    },
+    {
+      "by": "XPATH",
+      "value": "//input[contains(@id, 'username')]"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input[name=\"login\"]"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input[id=\"login\"]"
+    },
+    {
+      "by": "XPATH",
+      "value": "//input[@type='text']"
+    }
+  ],
+  "password_selectors": [
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input[type=\"password\"]"
+    },
+    {
+      "by": "NAME",
+      "value": "password"
+    },
+    {
+      "by": "ID",
+      "value": "password"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input[name=\"password\"]"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input[autocomplete=\"current-password\"]"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input[name=\"passwd\"]"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input[name=\"pwd\"]"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input[id=\"passwd\"]"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input[id=\"pwd\"]"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input[id=\"form.password\"]"
+    },
+    {
+      "by": "ID",
+      "value": "form.password"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input#UserPasswd"
+    },
+    {
+      "by": "NAME",
+      "value": "UserPasswd"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input.password[placeholder=\"请输入密码\"]"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input.password"
+    },
+    {
+      "by": "XPATH",
+      "value": "//input[@type='text' and @id='password']"
+    },
+    {
+      "by": "XPATH",
+      "value": "//input[@type='text' and @name='password']"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input#password[type=\"password\"]"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input[placeholder=\"密码\"]"
+    },
+    {
+      "by": "XPATH",
+      "value": "//input[contains(@placeholder, '密码')]"
+    },
+    {
+      "by": "XPATH",
+      "value": "//input[contains(@id, 'password')]"
+    }
+  ],
+  "login_button_selectors": [
+    {
+      "by": "CSS_SELECTOR",
+      "value": "button[type=\"submit\"]"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input[type=\"submit\"]"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input[type=\"button\"][value=\"Login\"]"
+    },
+    {
+      "by": "XPATH",
+      "value": "//button[contains(., '登录')]"
+    },
+    {
+      "by": "XPATH",
+      "value": "//button[contains(., '登陆')]"
+    },
+    {
+      "by": "XPATH",
+      "value": "//button[contains(., 'Sign In')]"
+    },
+    {
+      "by": "XPATH",
+      "value": "//button[contains(., 'Sign in')]"
+    },
+    {
+      "by": "XPATH",
+      "value": "//button[contains(., 'Log in')]"
+    },
+    {
+      "by": "XPATH",
+      "value": "//button[contains(., 'Login')]"
+    },
+    {
+      "by": "XPATH",
+      "value": "//button[contains(normalize-space(.), '登') and contains(normalize-space(.), '录')]"
+    },
+    {
+      "by": "ID",
+      "value": "loginBtn"
+    },
+    {
+      "by": "ID",
+      "value": "login"
+    },
+    {
+      "by": "NAME",
+      "value": "submit"
+    },
+    {
+      "by": "CLASS_NAME",
+      "value": "submit-button"
+    },
+    {
+      "by": "CLASS_NAME",
+      "value": "submit"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "button[nz-button]"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "button.ant-btn"
+    }
+  ],
+  "captcha_selectors": [
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input[id=\"form.validateCode\"]"
+    },
+    {
+      "by": "ID",
+      "value": "form.validateCode"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input[name=\"checkCode\"]"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input#checkCode"
+    },
+    {
+      "by": "NAME",
+      "value": "checkCode"
+    },
+    {
+      "by": "ID",
+      "value": "validateCode"
+    },
+    {
+      "by": "CLASS_NAME",
+      "value": "kapkey"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input.q-input__inner[placeholder=\"请输入图片验证码\"]"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input.q-input__inner[placeholder=\"请输入验证码\"]"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input[placeholder=\"验证码\"]"
+    },
+    {
+      "by": "XPATH",
+      "value": "//input[contains(@placeholder, '验证码')]"
+    },
+    {
+      "by": "XPATH",
+      "value": "//input[contains(@id, 'validateCode')]"
+    },
+    {
+      "by": "XPATH",
+      "value": "//input[contains(@id, 'checkCode')]"
+    },
+    {
+      "by": "XPATH",
+      "value": "//input[contains(@name, 'checkCode')]"
+    }
+  ]
+}

@@ -1,0 +1,75 @@
+{
+  "name": "huawei",
+  "description": "华为防火墙/交换机登录页面",
+  "username_selectors": [
+    {
+      "by": "ID",
+      "value": "username"
+    },
+    {
+      "by": "NAME",
+      "value": "username"
+    },
+    {
+      "by": "XPATH",
+      "value": "//input[@placeholder='用户名']"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input[autocomplete=\"username\"]"
+    }
+  ],
+  "password_selectors": [
+    {
+      "by": "ID",
+      "value": "platcontent"
+    },
+    {
+      "by": "NAME",
+      "value": "platcontent"
+    },
+    {
+      "by": "ID",
+      "value": "password"
+    },
+    {
+      "by": "NAME",
+      "value": "password"
+    },
+    {
+      "by": "XPATH",
+      "value": "//input[@placeholder='密码']"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "input[type=\"password\"]"
+    }
+  ],
+  "login_button_selectors": [
+    {
+      "by": "ID",
+      "value": "btn_login-button"
+    },
+    {
+      "by": "XPATH",
+      "value": "//button[contains(., 'Login')]"
+    },
+    {
+      "by": "XPATH",
+      "value": "//button[@type='button' and contains(@onclick, 'login')]"
+    },
+    {
+      "by": "ID",
+      "value": "loginBtn"
+    },
+    {
+      "by": "CSS_SELECTOR",
+      "value": "button[type=\"submit\"]"
+    },
+    {
+      "by": "XPATH",
+      "value": "//button[contains(., '登录')]"
+    }
+  ],
+  "captcha_selectors": []
+}

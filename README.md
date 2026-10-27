@@ -19,7 +19,7 @@
 
 <div align="center">
 [English](README.en.md) · [更新日志](CHANGELOG.md) · [贡献指南](CONTRIBUTING.md) ·
-[兼容性清单](docs/兼容性清单.md) · [测试报告](docs/测试报告.md) · [项目介绍](docs/项目介绍.md)
+[兼容性清单](docs/兼容性清单.md) · [测试报告](docs/测试报告.md) · [项目介绍](docs/测项目介绍.md)
 
 </div>
 

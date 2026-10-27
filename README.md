@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/V5.0.11_主窗口.png" alt="批量自动化登录工具 主界面" width="880">
+  <img src="docs/screenshots/V5.0.11_主窗口.png" alt="批量自动化登录工具 主界面" width="880">
   <br><br>
   <b>批量自动化登录工具</b><br>
   多设备分组批量 Web 登录 · 智能表单识别 · 可维护登录模板

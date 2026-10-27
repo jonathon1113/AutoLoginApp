@@ -1,11 +1,91 @@
-.htaccess
-css.php
-rpc/
-sites/site*/admin/
-sites/site*/private/
-sites/site*/public/admin/
-sites/site*/public/setup/
-sites/site*/public/theme/
-textpattern/
-HISTORY.txt
-README.txt
+# =============================================================================
+# 批量自动化登录工具（Login_app-V2）— Git 忽略规则
+#
+# 原则：
+# 1. **绝不提交任何凭据、配置或日志**（devices*.json / devices*.xlsx / *.log /
+#    login_logs.db）—— 这些文件包含真实的设备地址、用户名与密码；
+# 2. 编译与打包产物不入库（build/ dist/ *.spec version_info.txt）；
+# 3. 本地环境与 IDE 配置不入库；
+# 4. 源码、文档、模板、测试**全部入库**。
+# =============================================================================
+
+# ---------- Python 缓存 / 编译产物 ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.installed.cfg
+*.egg
+.Python
+
+# ---------- 虚拟环境 ----------
+.venv/
+venv/
+env/
+ENV/
+
+# ---------- 测试 / 类型检查缓存 ----------
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
+
+# ---------- 打包与构建产物（均由 create_spec.py / build.bat 现场生成） ----------
+build/
+dist/
+*.spec
+version_info.txt
+*.manifest
+*.pyz
+!docs/**/version_info.txt
+
+# ---------- 敏感数据：设备配置 / 凭据（**绝对不要提交**） ----------
+# devices.json 由 Excel 导入生成，username/password 为机器相关密钥加密的密文；
+# devices1.json 等历史文件可能含**明文**密码。
+devices.json
+devices*.json
+!devices.example.json
+# Excel 模板可能已被填入真实账号密码
+devices*.xlsx
+!devices_template_example.xlsx
+~$*.xlsx
+*.xls
+
+# ---------- 运行日志与数据库（可能含真实设备名 / 内网 IP） ----------
+*.log
+app.log
+error.log
+login_logs.db
+*.db
+selftest_acceptance.txt
+
+# ---------- 遗留文件（V4.7.1 之前使用 ChromeDriver，V5.0 起改用 Playwright） ----------
+chromedriver*.exe
+
+# ---------- 本地脚本与临时文件 ----------
+*.tmp
+*.bak
+*.bak.*
+*~
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# ---------- IDE / 编辑器 ----------
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+
+# ---------- 文档生成物 ----------
+docs/screenshots/*.tmp
+
+# ---------- 回归测试输出（每次运行都会变，不入库）----------
+# 权威记录请看 docs/测试报告.md（人工整理的版本）
+tests/test_report.txt

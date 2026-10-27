@@ -18,7 +18,7 @@
 </div>
 
 <div align="center">
-  
+
 [English](README.en.md) · [更新日志](CHANGELOG.md) · [贡献指南](CONTRIBUTING.md) ·
 [兼容性清单](docs/兼容性清单.md) · [测试报告](docs/测试报告.md) · [项目介绍](docs/项目介绍.md)
 
@@ -40,6 +40,10 @@
 
 > **浏览器内核：Playwright（Chromium，有头模式）**，不依赖 Selenium / ChromeDriver。
 > 浏览器保持可见，人工随时可以接管；退出程序自动回收全部浏览器进程。
+>
+> **环境依赖：****将Chromium内核通过二进制的方式打包到exe文件**，任何win环境都可正常运行。(没有浏览器及版本要求都是在包中)
+>
+> **缺点：**无法识别验证码，需要手动输入。不打算支持处win的其他环境。（其他系统后期源码开源可以自行打包测试）
 
 ---
 

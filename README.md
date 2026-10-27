@@ -7,6 +7,7 @@
 
 
 <div align="center">
+
 [![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![PyQt6](https://img.shields.io/badge/PyQt6-6.11.0-41CD52?logo=qt&logoColor=white)](https://pypi.org/project/PyQt6/)
 [![Playwright](https://img.shields.io/badge/Playwright-1.64.1-2EAD33?logo=playwright&logoColor=white)](https://playwright.dev/python/)
@@ -17,6 +18,7 @@
 </div>
 
 <div align="center">
+
 [English](README.en.md) · [更新日志](CHANGELOG.md) · [贡献指南](CONTRIBUTING.md) ·
 [兼容性清单](docs/兼容性清单.md) · [测试报告](docs/测试报告.md)
 

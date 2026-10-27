@@ -18,9 +18,8 @@
 </div>
 
 <div align="center">
-
 [English](README.en.md) · [更新日志](CHANGELOG.md) · [贡献指南](CONTRIBUTING.md) ·
-[兼容性清单](docs/兼容性清单.md) · [测试报告](docs/测试报告.md)
+[兼容性清单](docs/兼容性清单.md) · [测试报告](docs/测试报告.md).[项目介绍](docs/项目介绍.md)
 
 </div>
 
@@ -384,6 +383,8 @@ python tests/test_real_login.py       :: 真实 Playwright 端到端验证
 ## 📄 许可证
 
 本项目采用 [Apache License 2.0](LICENSE) 开源。
+
+目前源码还在测试中，测试好发布。
 
 ```
 Copyright 2026 Jonathon

@@ -362,6 +362,16 @@ python tests/test_real_login.py       :: 真实 Playwright 端到端验证
 
 ---
 
+## 已知bug
+
+**现在**：每当启用1个实例，系统会生产一条登录失败4625日志。
+
+**原因**：**这不是 Playwright 的 bug，也不是 Selenium 遗留问题，也不是项目主动调用凭据 API**；它是 **Chromium 上游回归 × Playwright 的临时 profile 策略 × 项目的高频浏览器创建** 三者叠加的结果。
+
+**解决**：等官方更新再升级内置chrom二进制版本。
+
+
+
 ## ❓ 常见问题
 
 | 现象 | 原因 | 处理 |

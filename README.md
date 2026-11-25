@@ -40,6 +40,10 @@
 
 ## 快速开始
 
+> **环境**：Python 3.14.10
+>
+> **快捷安装**：`winget install -e --id Python.Python.3.14`
+
 ```bat
 pip install -r requirements.txt
 set PLAYWRIGHT_BROWSERS_PATH=0
@@ -87,7 +91,11 @@ build.bat
 产物：`dist/批量登录工具V6.0.6.exe`（Windows 路径 `dist\批量登录工具V6.0.6.exe`），
 双击即可运行。
 
----
+**打包参数说明：**
+
+> build.bat          : 使用当前版本号打包（默认；重复打包不改变版本号）
+> build.bat bump     : 先把补丁号 +1（5.0.9 -> 5.0.10），再打包
+> build.bat 5.0.10   : 先切换到指定版本号，再打包
 
 ## 常见问题
 

@@ -244,6 +244,10 @@ APP_NAME = "批量自动化登录工具"
 APP_VERSION = "6.0.6"
 APP_VERSION_INFO = (6, 0, 6, 2)
 
+# 项目主页（开源仓库地址）：显示在「帮助 → 关于」中，方便用户找到源码、
+# 文档与新版本。**纯展示用常量**，不参与任何逻辑判断。
+PROJECT_URL = "https://github.com/jonathon1113/AutoLoginApp"
+
 
 def resolve_icon_path():
     """获取应用图标路径。

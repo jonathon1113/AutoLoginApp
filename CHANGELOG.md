@@ -168,6 +168,14 @@ os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", "0")
   补充 `CAPTCHA_OCR_BETA` / `CAPTCHA_SKIP_WHEN_TEMPLATE_EMPTY` /
   `CAPTCHA_ABSENT_CACHE_ENABLED` 三个常量。
 
+### 变更：「关于」窗口显示项目主页地址（可点击）
+
+- `appcore/config.py` 新增常量 `PROJECT_URL`（开源仓库地址），作为项目地址的**唯一来源**；
+- `appui/main_window.py::show_about()` 在功能特点之后追加「项目地址：…」一行，
+  并把正文改为富文本渲染 + `openExternalLinks=True`，地址**可直接点击**，
+  在系统默认浏览器中打开仓库，方便用户找到源码、文档与新版本；
+- 属于**纯展示性改动**，不涉及任何登录逻辑、配置格式或文件读写。
+
 ---
 
 ## 6.0.1 — 图片验证码自动识别闭环首发（离线 OCR）

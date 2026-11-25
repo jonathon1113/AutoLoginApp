@@ -80,6 +80,7 @@ from appcore.config import (
     APP_NAME,
     APP_VERSION,
     CONFIG_FILE,
+    PROJECT_URL,
     EXCEL_TEMPLATE_FILE,
     TEMPLATE_DIR,
     resolve_icon_path,
@@ -1932,7 +1933,11 @@ class LoginWindow(QMainWindow):
         msg.exec()
 
     def show_about(self):
-        """显示关于"""
+        """显示关于
+
+        除基本信息与功能特点外，额外显示**项目主页地址**（开源仓库），
+        并做成可点击链接，方便用户直接找到源码、文档与新版本。
+        """
         about_text = f"""【关于】
 
 软件名：{APP_NAME}
@@ -1945,11 +1950,26 @@ class LoginWindow(QMainWindow):
 • 数据加密存储
 • 智能表单识别
 • 基于 Playwright 的浏览器自动化
-• 可维护的登录模板系统（templates 目录）"""
+• 可维护的登录模板系统（templates 目录）
+
+项目地址：{PROJECT_URL}"""
 
         msg = MessageBox("关于", about_text, self)
         msg.yesButton.setText("确定")
         msg.cancelButton.hide()
+        # 正文改成富文本：项目地址可直接点击，在系统默认浏览器中打开仓库
+        msg.content_text.setOpenExternalLinks(True)
+        safe_text = (about_text
+                     .replace("&", "&amp;")
+                     .replace("<", "&lt;")
+                     .replace(">", "&gt;")
+                     .replace("\n", "<br>"))
+        # 把项目地址渲染成真正的超链接（QTextBrowser 不会自动识别纯文本 URL）
+        safe_text = safe_text.replace(
+            PROJECT_URL, '<a href="%s">%s</a>' % (PROJECT_URL, PROJECT_URL))
+        msg.content_text.setHtml(
+            '<p style="line-height:160%;">' + safe_text + "</p>"
+        )
         msg.exec()
 
 

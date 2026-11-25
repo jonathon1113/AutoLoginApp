@@ -23,8 +23,8 @@ import tempfile
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-DOCS = ["README.md", "README.en.md", "技术文档.md", "CHANGELOG.md",
-        "docs/变更说明.md", "docs/兼容性清单.md", "docs/测试报告.md"]
+DOCS = ["README.md", "README.en.md", "docs/技术文档.md", "CHANGELOG.md",
+        "docs/功能与实现详解.md", "docs/变更说明.md", "docs/兼容性清单.md", "docs/测试报告.md"]
 HIST_RE = re.compile(r"5\.0\.[0-8]")
 
 RESULTS = []
@@ -152,7 +152,7 @@ def test_doc_slots():
 # 违反「测试不得污染真实用户数据」的约定（任务书 8.3）。
 WORKSPACE_FILES = (
     "bump_version.py", "create_spec.py", "README.md", "README.en.md",
-    "技术文档.md", "CHANGELOG.md", "build.bat",
+    "CHANGELOG.md", "build.bat",
 )
 
 

@@ -1,3 +1,0 @@
-PASS 浏览器启动成功 Chromium 156.0.8078.4
-PASS 登录流程: 自检设备: OK（模板=default）
-PASS 登录后URL: http://127.0.0.1:8765/dashboard

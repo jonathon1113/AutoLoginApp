@@ -89,6 +89,23 @@ if %errorlevel% neq 0 (
     echo   安装 openpyxl...
     %PYTHON% -m pip install openpyxl -q
 )
+rem 验证码自动识别依赖（纯离线 OCR：本地 ONNX 模型，不联网）。
+rem 缺失时程序会自动退回「人工处理验证码」的历史行为，不会崩溃。
+%PYTHON% -m pip show ddddocr >nul 2>&1
+if %errorlevel% neq 0 (
+    echo   安装 ddddocr...
+    %PYTHON% -m pip install ddddocr -q
+)
+%PYTHON% -m pip show onnxruntime >nul 2>&1
+if %errorlevel% neq 0 (
+    echo   安装 onnxruntime...
+    %PYTHON% -m pip install onnxruntime -q
+)
+%PYTHON% -m pip show Pillow >nul 2>&1
+if %errorlevel% neq 0 (
+    echo   安装 Pillow...
+    %PYTHON% -m pip install Pillow -q
+)
 echo   OK 依赖检查完成
 echo.
 
@@ -190,7 +207,9 @@ echo     2. 首次启动会解压内置浏览器，耗时较长属正常现象
 echo     3. devices.json / login_logs.db / app.log 等读写在 EXE 同目录
 echo     4. 图标沿用原项目 ico\app.ico
 echo     5. 模板目录为 EXE 同目录的 templates\（可写），不随包内置
-echo     6. 打包体积优化（仅剔除运行时确认未使用的依赖与资源）：
+echo     6. 验证码自动识别：ddddocr 模型与 onnxruntime DLL 已随包内置，
+echo        运行时完全离线；EXE 体积因此增加约 100~150MB
+echo     7. 打包体积优化（仅剔除运行时确认未使用的依赖与资源）：
 echo        A 未使用的重依赖（numpy/scipy/PIL/lxml/pandas/matplotlib）
 echo        B 有头模式不调用的 headless_shell 与 ffmpeg
 echo        C 非中英文的 Qt 翻译文件与未使用的 PyQt6 模块

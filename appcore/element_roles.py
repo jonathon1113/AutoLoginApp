@@ -785,4 +785,15 @@ def static_role_risk(field_key, selector):
     elif field_key == 'captcha_selectors':
         if 'type="password"' in value or "type='password'" in value:
             return '疑似密码框选择器，不能作验证码字段'
+    elif field_key == 'captcha_image_selectors':
+        # 验证码「图片」选择器：应指向 img / canvas，
+        # 若明显是输入框或按钮，说明填错了字段。
+        if 'type="password"' in value or "type='password'" in value:
+            return '疑似密码框选择器，不能作验证码图片'
+        if value.startswith('input') or 'input[' in value or \
+                'input.' in value or 'input#' in value:
+            return '疑似输入框选择器，不能作验证码图片（应为 img/canvas）'
+        if value.startswith('button') or 'button[' in value or \
+                'type="submit"' in value or 'type="button"' in value:
+            return '疑似按钮选择器，不能作验证码图片（应为 img/canvas）'
     return ''

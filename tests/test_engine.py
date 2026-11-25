@@ -25,6 +25,9 @@ import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# 与 main.py 保持一致：源码运行时若浏览器已按「路径 0」安装，则沿用同一路径模式
+os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", "0")
+
 # 控制台编码兼容（Windows GBK 控制台无法输出 ✓ 等字符）
 for _stream in (sys.stdout, sys.stderr):
     try:
@@ -32,6 +35,7 @@ for _stream in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
+from appcore import config as app_config                    # noqa: E402
 from appcore.automation import get_loop                     # noqa: E402
 from appcore.browser import (                                # noqa: E402
     QUICK_SESSION,
@@ -109,10 +113,18 @@ async def run_all():
         await check("已登录检测(跳过已登录设备)", t_already_logged)
 
         # ---- 5. 验证码检测 ----
+        # 关闭验证码自动识别：保持「发现验证码即停止、不提交」的历史行为，
+        # 原断言不变（自动识别由 tests/test_captcha_flow.py 单独覆盖）。
         async def t_captcha():
-            await session.open_page(f"{base}/captcha")
-            success, msg, _ = await login_device(session, captcha)
-            return success and "已完成" in msg, msg
+            original_auto = app_config.CAPTCHA_AUTO_ENABLED
+            app_config.CAPTCHA_AUTO_ENABLED = False
+            try:
+                await session.open_page(f"{base}/captcha")
+                success, msg, _ = await login_device(session, captcha)
+            finally:
+                app_config.CAPTCHA_AUTO_ENABLED = original_auto
+            # V6.0.1 起不再统一回「已完成」，而是如实给出「需要验证码」
+            return success and ("已完成" in msg or "需要验证码" in msg), msg
         await check("验证码检测", t_captcha)
 
         # ---- 6. 模板选择器录制 ----
@@ -134,6 +146,13 @@ async def run_all():
             return ok and pages == 3, f"结果={results}, 标签页数={pages}"
         await check("分组批量登录(多标签页)", t_group)
 
+        # ---- 7b. 分组登录完成后自动切换到第一个标签页 ----
+        async def t_group_tab():
+            group_session = BrowserManager.get("测试组")
+            idx = group_session.current_index if group_session else -1
+            return idx == 0, f"current_index={idx}（应为 0，即第一个标签页）"
+        await check("分组登录完成后自动切换到第一个标签页", t_group_tab)
+
         # ---- 8. 快捷登录 ----
         async def t_quick():
             success, msg, _ = await quick_login("快捷设备", f"{base}/login", "admin", "pass123")
@@ -142,6 +161,15 @@ async def run_all():
             pages = quick_session.page_count if quick_session else 0
             return success and success2 and pages == 2, f"{msg} / {msg2} / 标签页={pages}"
         await check("快捷登录(复用浏览器+新标签页)", t_quick)
+
+        # ---- 8b. 快捷登录完成后保持当前标签页，不切换到第一个标签页 ----
+        async def t_quick_tab():
+            quick_session = BrowserManager.get(QUICK_SESSION)
+            idx = quick_session.current_index if quick_session else -1
+            count = quick_session.page_count if quick_session else 0
+            return count >= 2 and idx == count - 1, (
+                f"current_index={idx} 标签页数={count}（应停在最后登录的标签页，不回到 0）")
+        await check("快捷登录完成后不再切换到第一个标签页", t_quick_tab)
 
         # ---- 9. 选择器转换 ----
         async def t_selector():

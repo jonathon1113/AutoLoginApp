@@ -555,7 +555,7 @@ async def scenario_slow_page(context, base_url):
 
 
 # =============================================================================
-# E 组：每个浏览器实例登录完成后选中第一个标签页
+# E 组：标签页切换行为（分组登录切第一个标签页，快捷登录保持当前标签页）
 # =============================================================================
 async def scenario_tabs(context, browser, base_url):
     # E1：单实例多标签页 -> 选中第一个并激活到前台
@@ -614,7 +614,7 @@ async def scenario_tabs(context, browser, base_url):
           tab_a.bring_to_front_calls == 1 and tab_b.bring_to_front_calls == 1,
           f"A={tab_a.bring_to_front_calls} B={tab_b.bring_to_front_calls}")
 
-    # E6：快捷登录后同样遵守「选中第一个标签页」
+    # E6：快捷登录后保持当前标签页，不切换到第一个标签页
     orig_get = browser_mod.BrowserManager.get
     orig_valid = browser_mod.BrowserManager.is_valid
     quick = browser_mod.BrowserSession('快捷登录实例')
@@ -630,8 +630,9 @@ async def scenario_tabs(context, browser, base_url):
         ok, msg, _recorded = await quick_login(
             '快捷登录-标签页', f"{base_url}/generic", 'admin', 'pass123', 'default')
         check("E6 快捷登录成功", ok, msg)
-        check("E7 快捷登录后选中该实例的第一个标签页",
-              quick.current_index == 0 and quick_first.bring_to_front_calls >= 1,
+        # V5.0.12：快捷登录完成后不再切回第一个标签页，保持登录所在标签页
+        check("E7 快捷登录后保持当前标签页（不切换到第一个标签页）",
+              quick.current_index != 0 and quick_first.bring_to_front_calls == 0,
               f"current_index={quick.current_index} "
               f"calls={quick_first.bring_to_front_calls}")
     finally:

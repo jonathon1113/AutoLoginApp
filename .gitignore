@@ -1,91 +1,149 @@
 # =============================================================================
-# 批量自动化登录工具（Login_app-V2）— Git 忽略规则
+# 批量自动化登录工具（Login_app-V2）—— Git 忽略规则
 #
-# 原则：
-# 1. **绝不提交任何凭据、配置或日志**（devices*.json / devices*.xlsx / *.log /
-#    login_logs.db）—— 这些文件包含真实的设备地址、用户名与密码；
-# 2. 编译与打包产物不入库（build/ dist/ *.spec version_info.txt）；
-# 3. 本地环境与 IDE 配置不入库；
-# 4. 源码、文档、模板、测试**全部入库**。
+# 策略：**白名单模式** —— 默认忽略仓库里的**一切**，只显式放行
+#       「运行 / 构建 / 文档」真正需要的文件。
+#
+#       这样以后不管目录里临时多出什么（日志、缓存、测试产物、个人脚本、
+#       打包中间物），`git add -A` 都不会把它们带上 GitHub。
+#
+# 放行清单：
+#   - 源码        ：main.py / appcore/ / appui/ / icon_data.py / encrypt.py
+#   - 运行资源    ：templates/*.json、ico/app.ico
+#   - 命令行与打包：login_batch.py / import_excel.py / create_spec.py /
+#                   bump_version.py / get_version.py / verify_pyz.py / build.bat
+#   - 依赖清单    ：requirements.txt / requirements-dev.txt
+#   - 文档        ：README*.md / CHANGELOG.md / CONTRIBUTING.md / LICENSE / docs/
+#   - 测试        ：tests/（回归测试可复现）
+#
+# 永不入库：设备凭据、Excel 数据表、日志、登录数据库、虚拟环境、
+#           Python 缓存、打包产物（build/ dist/ *.spec）、临时与备份文件。
+#
+# 注意：修改本文件后，已被 git 跟踪的旧文件**不会**自动取消跟踪，
+#       需要另外执行 `git rm --cached <文件>`。
 # =============================================================================
 
-# ---------- Python 缓存 / 编译产物 ----------
-__pycache__/
-*.py[cod]
-*$py.class
-*.egg-info/
-.eggs/
-.installed.cfg
-*.egg
-.Python
 
-# ---------- 虚拟环境 ----------
-.venv/
-venv/
-env/
-ENV/
+# -----------------------------------------------------------------------------
+# 0. 默认忽略一切（白名单的基底）
+# -----------------------------------------------------------------------------
+*
 
-# ---------- 测试 / 类型检查缓存 ----------
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.coverage
-.coverage.*
-htmlcov/
-coverage.xml
-.tox/
 
-# ---------- 打包与构建产物（均由 create_spec.py / build.bat 现场生成） ----------
+# -----------------------------------------------------------------------------
+# 1. 放行需要的目录
+#    （目录本身必须先放行，否则 git 不会进入目录，"!" 也就无法生效）
+# -----------------------------------------------------------------------------
+!appcore/
+!appui/
+!templates/
+!ico/
+!docs/
+!tests/
+!tools/
+
+
+# -----------------------------------------------------------------------------
+# 2. 放行这些目录里的文件
+# -----------------------------------------------------------------------------
+!appcore/**
+!appui/**
+!templates/**
+!ico/**
+!docs/**
+!tests/**
+!tools/**
+
+
+# -----------------------------------------------------------------------------
+# 3. 放行根目录的必要文件
+#    新增根目录脚本时，请同步在这里加一行
+# -----------------------------------------------------------------------------
+!.gitignore
+!main.py
+!icon_data.py
+!encrypt.py
+!login_batch.py
+!import_excel.py
+!create_spec.py
+!bump_version.py
+!get_version.py
+!verify_pyz.py
+!build.bat
+!requirements.txt
+!requirements-dev.txt
+!README.md
+!README.en.md
+!CHANGELOG.md
+!CONTRIBUTING.md
+!LICENSE
+
+
+# -----------------------------------------------------------------------------
+# 4. 放行之后，仍需剔除的目录内产物
+#    （这些规则必须排在"放行"之后才会生效）
+# -----------------------------------------------------------------------------
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.ipynb_checkpoints/
+**/node_modules/
+**/.DS_Store
+**/Thumbs.db
+**/*.log
+**/*.db
+**/*.sqlite
+**/*.sqlite3
+**/*.bak
+**/*.tmp
+**/*~
+**/~$*
+docs/screenshots/*.tmp
+docs/冻结态自检结果_selftest_result.txt
+tests/test_report.txt
+tests/test_report*.txt
+tests/**/out_*
+tools/_tmp_*
+tools/verify_*.ps1
+
+
+# -----------------------------------------------------------------------------
+# 5. 安全网：以下内容**永远**不允许入库
+#    （即使以后有人误把它们加进放行清单，这里也会拦一道）
+# -----------------------------------------------------------------------------
+# --- 设备配置与凭据（可能含真实账号 / 内网地址） ---
+devices.json
+devices*.json
+devices*.xlsx
+~$*.xlsx
+*.xls
+.env
+*.key
+*.pem
+
+# --- 打包与构建产物（均由 create_spec.py / build.bat 现场生成） ---
 build/
 dist/
 *.spec
 version_info.txt
 *.manifest
 *.pyz
-!docs/**/version_info.txt
-
-# ---------- 敏感数据：设备配置 / 凭据（**绝对不要提交**） ----------
-# devices.json 由 Excel 导入生成，username/password 为机器相关密钥加密的密文；
-# devices1.json 等历史文件可能含**明文**密码。
-devices.json
-devices*.json
-!devices.example.json
-# Excel 模板可能已被填入真实账号密码
-devices*.xlsx
-!devices_template_example.xlsx
-~$*.xlsx
-*.xls
-
-# ---------- 运行日志与数据库（可能含真实设备名 / 内网 IP） ----------
-*.log
-app.log
-error.log
-login_logs.db
-*.db
-selftest_acceptance.txt
-
-# ---------- 遗留文件（V4.7.1 之前使用 ChromeDriver，V5.0 起改用 Playwright） ----------
+*.exe
+*.dll
+*.pyd
 chromedriver*.exe
 
-# ---------- 本地脚本与临时文件 ----------
-*.tmp
-*.bak
-*.bak.*
-*~
-Thumbs.db
-.DS_Store
-desktop.ini
-
-# ---------- IDE / 编辑器 ----------
+# --- 本地环境与 IDE ---
+.venv/
+venv/
+env/
+ENV/
 .idea/
 .vscode/
 *.iml
 *.swp
 *.swo
-
-# ---------- 文档生成物 ----------
-docs/screenshots/*.tmp
-
-# ---------- 回归测试输出（每次运行都会变，不入库）----------
-# 权威记录请看 docs/测试报告.md（人工整理的版本）
-tests/test_report.txt
+Thumbs.db
+desktop.ini

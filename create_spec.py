@@ -51,9 +51,13 @@ version_file = script_dir / 'version_info.txt'
 #   图表组件会引入 pandas/matplotlib；这些在当前程序中没有任何调用路径。
 #   lxml 对 openpyxl 是可选依赖（缺失时自动回退 xml.etree），Excel 读写不受影响。
 #   其余为项目从未使用的其它 Qt 绑定与桌面绑定。
+#
+# 注意：numpy 与 PIL **不可排除**——验证码自动识别依赖
+#   ddddocr -> onnxruntime(numpy) + Pillow（预处理 / 测试页生成验证码图片）。
+# 排除它们会让打包后的 EXE 无法识别验证码。
 EXCLUDES_DEPS = [
     'qfluentwidgets',
-    'numpy', 'scipy', 'PIL', 'pandas', 'matplotlib',
+    'scipy', 'pandas', 'matplotlib',
     'lxml',
     'PySide2', 'PySide6', 'shiboken2', 'shiboken6',
     'PyQt5', 'PyQt5.QtCore', 'PyQt5.QtGui', 'PyQt5.QtWidgets',
@@ -149,8 +153,10 @@ def build_spec_content(entry='main.py', out_name=None, console=False):
     out_name = out_name or exe_name
     spec_content = f"""# -*- mode: python ; coding: utf-8 -*-
 import os
+import sys
 
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import (collect_all, collect_data_files,
+                                    collect_dynamic_libs)
 
 # 以 spec 文件所在目录为基准，避免依赖当前工作目录
 ROOT = SPECPATH
@@ -189,6 +195,30 @@ hiddenimports = tmp_ret[2] + [
     'PyQt6.QtCore', 'PyQt6.QtGui', 'PyQt6.QtWidgets',
     'sqlite3',
 ]
+
+# ------------------------------------------------------------------
+# 验证码自动识别（ddddocr + onnxruntime，纯离线依赖）
+# - ddddocr 的模型文件（*.onnx）必须作为「数据文件」收集，
+#   否则打包后的 EXE 运行时无法加载模型；
+# - onnxruntime 的 DLL 必须作为「二进制」收集，否则 import 直接失败；
+# - 两者都不得引入任何联网组件（内网离线环境要求）。
+# 未安装时跳过收集并给出提示：程序会自动退回「人工处理验证码」的历史行为。
+# ------------------------------------------------------------------
+try:
+    _ocr_datas = collect_data_files('ddddocr')
+    datas += _ocr_datas
+    hiddenimports += ['ddddocr']
+    print('[spec] 已收集 ddddocr 模型数据 {{}} 项'.format(len(_ocr_datas)))
+except Exception as _ocr_error:
+    print('[spec] 未安装 ddddocr，跳过验证码识别模型收集：{{}}'.format(_ocr_error))
+
+try:
+    _ort_binaries = collect_dynamic_libs('onnxruntime')
+    binaries += _ort_binaries
+    hiddenimports += ['onnxruntime', 'onnxruntime.capi._pybind_state']
+    print('[spec] 已收集 onnxruntime 动态库 {{}} 项'.format(len(_ort_binaries)))
+except Exception as _ort_error:
+    print('[spec] 未安装 onnxruntime，跳过 ONNX 运行时收集：{{}}'.format(_ort_error))
 
 # ------------------------------------------------------------------
 # 体积优化 B：剔除有头模式下不会被调用的浏览器组件
@@ -330,6 +360,88 @@ def _filter_translations(entries):
 if {OPTIMIZE_QT}:
     a.datas, dropped_tr = _filter_translations(a.datas)
     print('[spec] 优化C：剔除非中英文 Qt 翻译文件 {{}} 个'.format(len(dropped_tr)))
+
+# ------------------------------------------------------------------
+# 运行库 DLL 去冲突（关键修复）
+#
+# 背景：某些第三方 wheel，或构建机 PATH 上的原生库，会夹带旧版
+#   msvcp140.dll / vcruntime140.dll / ucrtbase.dll / api-ms-win-*.dll。
+#   PyInstaller 会把这些 DLL 平铺到 EXE 根目录，Windows 加载器优先加载它们，
+#   于是 Qt6Gui 报
+#   「ImportError: DLL load failed while importing QtGui: 找不到指定的程序」
+#   （procedure not found —— 本质是运行库版本比 Qt 要求的更旧）。
+#
+# 处理：
+#   1) msvcp140 / vcruntime140 / concrt140 等 -> 换成 System32 的系统版本；
+#   2) icuuc / icuin / icu -> 换成 System32 的系统 ICU（Qt6Core.dll 依赖
+#      icuuc.dll；第三方 ICU 版本不匹配会报「procedure not found」）；
+#   3) icudt*.dll / ucrtbase / api-ms-win-*.dll -> 移除
+#      （Win10+ 系统自带 UCRT 与 ICU 数据）。
+# ------------------------------------------------------------------
+_RUNTIME_DLL_NAMES = {{
+    'msvcp140.dll', 'msvcp140_1.dll', 'msvcp140_2.dll',
+    'msvcp140_atomic_wait.dll', 'vcruntime140.dll', 'vcruntime140_1.dll',
+    'concrt140.dll', 'vcomp140.dll',
+    # Qt6Core.dll 依赖 icuuc.dll；必须用系统 ICU，不能用第三方附带的版本
+    'icuuc.dll', 'icuin.dll', 'icu.dll',
+}}
+_UCRT_DLL_NAMES = {{'ucrtbase.dll'}}
+_UCRT_DLL_PREFIX = 'api-ms-win-'
+_DROP_DLL_PREFIXES = ('icudt',)
+
+
+def _normalize_runtime_dlls(binaries):
+    # 把旧版 MSVC/UCRT 运行库替换为系统版本或移除
+    system_dir = os.path.join(os.environ.get('SystemRoot', r'C:\\Windows'),
+                              'System32')
+    out, replaced, dropped = [], [], []
+    for entry in binaries:
+        dest, src, kind = entry[0], entry[1], entry[2]
+        name = os.path.basename(str(dest)).lower()
+        if name in _RUNTIME_DLL_NAMES:
+            system_path = os.path.join(system_dir,
+                                       os.path.basename(str(dest)))
+            if os.path.exists(system_path):
+                out.append((dest, system_path, kind))
+                replaced.append(name)
+            else:
+                dropped.append(name)
+            continue
+        if (name in _UCRT_DLL_NAMES or name.startswith(_UCRT_DLL_PREFIX)
+                or name.startswith(_DROP_DLL_PREFIXES)):
+            dropped.append(name)
+            continue
+        out.append(entry)
+    return out, replaced, dropped
+
+
+a.binaries, _rt_replaced, _rt_dropped = _normalize_runtime_dlls(a.binaries)
+print('[spec] 运行库去冲突：替换 {{}} 个为系统版本，移除 {{}} 个旧 UCRT'
+      .format(len(_rt_replaced), len(_rt_dropped)))
+
+# ------------------------------------------------------------------
+# 运行库「补全」（关键修复：换一台电脑就报找不到模块）
+#
+# PyInstaller 只收集依赖分析检测到的 DLL，实践中会漏掉：
+#   1) VC++ 运行库（msvcp140*.dll / vcruntime140*.dll / concrt140.dll /
+#      vccorlib140.dll）—— 构建机装了运行库所以本机正常，换机即缺；
+#   2) Windows 自带 ICU（icu.dll）—— icuuc.dll 只是转发 DLL，
+#      真正的实现/数据在 icu.dll；Win10 1809 / Server 2019 没有它。
+# 两者都会表现为：
+#   ImportError: DLL load failed while importing QtGui: 找不到指定的模块
+# 这里显式把 PyQt6\Qt6\bin 的整套 VC++ 运行库与系统 icu.dll 打进包，
+# 使 EXE 不再依赖目标机是否安装 VC++ 运行库 / 是否有 ICU。
+# ------------------------------------------------------------------
+try:
+    sys.path.insert(0, ROOT)
+    from appcore.packaging_utils import (find_runtime_binaries,
+                                         merge_binaries)
+    _runtime_extra = find_runtime_binaries()
+    a.binaries = merge_binaries(a.binaries, _runtime_extra)
+    print('[spec] 已补全运行库 {{}} 项（VC++ 运行库 + icu.dll）'
+          .format(len(_runtime_extra)))
+except Exception as _runtime_error:
+    print('[spec] 运行库补全失败：{{}}'.format(_runtime_error))
 
 pyz = PYZ(a.pure)
 

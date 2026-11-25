@@ -9,14 +9,18 @@ import asyncio
 import threading
 import time
 
+from . import config as app_config
 from . import devices as device_store
 from .browser import (
     QUICK_SESSION,
     BrowserManager,
+    captcha_image_fingerprint,
+    capture_captcha_image,
     click_login_button_detailed,
     find_by_selectors_detailed,
     find_captcha_field_detailed,
     find_captcha_field_quick,
+    find_captcha_image,
     find_password_field,
     find_username_field,
     get_page_ready_state,
@@ -27,6 +31,8 @@ from .browser import (
     probe_locator,
     wait_page_loaded,
 )
+from . import captcha_cache
+from .captcha_ocr import recognizer
 from .config import (GENERIC_DISCOVERY_BUDGET, LOGIN_RESULT_TIMEOUT,
                      SELECTOR_LOOKUP_BUDGET, SELECTOR_LOOKUP_READY_BUDGET,
                      SELECTOR_LOOKUP_SLOW_BUDGET, TEMPLATE_ATTEMPT_BUDGET)
@@ -41,6 +47,30 @@ ERROR_KEYWORDS = [
     '密码错误', '登陆失败', '登录失败', '用户名或密码', '账号密码错误', '用户不存在',
     '验证失败', '认证失败', 'login failed', 'incorrect password', 'wrong password',
     'invalid credentials', 'invalid username', 'access denied', 'authentication failed',
+]
+
+# 明确的「验证码错误」提示关键词。
+# 只有这些提示才允许自动刷新重试；出现账号 / 密码错误时必须立即停止，
+# 防止连续错误导致账号被锁定。
+CAPTCHA_ERROR_KEYWORDS = [
+    '验证码错误', '验证码不正确', '验证码有误', '验证码已失效', '验证码已过期',
+    '验证码无效', '校验码错误', '图形码错误', '请重新输入验证码', '验证码不匹配',
+    '验证码验证失败', 'invalid captcha', 'incorrect captcha', 'captcha is invalid',
+    'captcha error', 'wrong captcha',
+    # 会话/CSRF 失效：刷新验证码后重试即可（不区分大小写时会被归为验证码错误）
+    '页面已过期',
+]
+
+# 验证码刷新链接上可能出现的文字
+CAPTCHA_REFRESH_LINK_KEYWORDS = [
+    '换一张', '刷新', '看不清', '点击刷新', '重新获取', '获取验证码',
+    '换验证码', '重新加载',
+]
+
+# 登录成功的页面特征（用于「表单提交后 URL 不变」的站点）
+SUCCESS_KEYWORDS = [
+    '欢迎', '登录成功', '登陆成功', '退出登录', '退出登陆', '注销',
+    'welcome', 'logout', 'sign out', 'signed in',
 ]
 
 # 提示框类容器（优先在这些容器中查找错误信息，避免误判正文）
@@ -86,8 +116,13 @@ RETRYABLE_REASONS = {
 }
 
 
-async def _detect_login_error(page):
-    """检测页面上可见的登录失败提示，返回提示文本或 None"""
+async def _detect_error_by_keywords(page, keywords):
+    """在页面上查找包含指定关键词的可见提示文本，返回文本或 None。
+
+    先查提示框类容器（避免误判正文），再查页面正文。
+    """
+    if not keywords:
+        return None
     # 1) 优先检查提示框类元素
     try:
         for selector in ALERT_SELECTORS:
@@ -103,7 +138,7 @@ async def _detect_login_error(page):
                     continue
                 if not text:
                     continue
-                for keyword in ERROR_KEYWORDS:
+                for keyword in keywords:
                     if keyword.lower() in text.lower():
                         return text.replace('\n', ' ')[:60]
     except Exception:
@@ -114,7 +149,7 @@ async def _detect_login_error(page):
         body_text = await page.locator('body').inner_text(timeout=3000)
     except Exception:
         return None
-    for keyword in ERROR_KEYWORDS:
+    for keyword in keywords:
         if keyword.lower() in body_text.lower():
             for line in body_text.splitlines():
                 if keyword.lower() in line.lower():
@@ -122,8 +157,47 @@ async def _detect_login_error(page):
     return None
 
 
+async def _detect_login_error(page):
+    """检测页面上可见的登录失败提示，返回提示文本或 None"""
+    return await _detect_error_by_keywords(page, ERROR_KEYWORDS)
+
+
+async def _detect_login_success(page):
+    """检测页面上是否已出现「登录成功」的特征（URL 不变也能判定成功）。"""
+    try:
+        body_text = await page.locator('body').inner_text(timeout=2000)
+    except Exception:
+        return None
+    if not body_text:
+        return None
+    lowered = body_text.lower()
+    for keyword in SUCCESS_KEYWORDS:
+        if keyword.lower() in lowered:
+            for line in body_text.splitlines():
+                if keyword.lower() in line.lower():
+                    return line.strip()[:60]
+    return None
+
+
+async def _detect_captcha_error(page):
+    """检测页面上可见的「验证码错误」提示，返回提示文本或 None。
+
+    只有这里识别到的提示才允许「刷新验证码后重试」；
+    账号 / 密码错误必须立即停止。
+    """
+    return await _detect_error_by_keywords(page, CAPTCHA_ERROR_KEYWORDS)
+
+
 async def _looks_logged_in(page, target_url):
     """判断页面是否已经不是登录页（已登录检测）"""
+    # 0) 页面已出现「欢迎 / 退出登录」等成功特征 -> 直接判定已登录。
+    #    必须放在 URL 判断之前：很多站点的登录页地址本身含 "login"
+    #    （如 captcha_login.php），登录成功后 URL 不变，只看 URL 会误判。
+    try:
+        if await _detect_login_success(page):
+            return True
+    except Exception:
+        pass
     # 页面仍然存在密码输入框 -> 仍停留在登录表单上，不算已登录
     try:
         state, _locator = await probe_locator(page, 'CSS_SELECTOR',
@@ -159,20 +233,36 @@ async def _looks_logged_in(page, target_url):
     return False
 
 
-async def _wait_login_result(page, pwd_field, original_url):
+async def _wait_login_result(page, pwd_field, original_url, timeout=None,
+                              detectors=None):
     """等待并判定登录结果。
 
     返回 (confirmed, message)：
     - confirmed=True  表示登录已确认（表单消失或页面已跳转）
     - confirmed=False 且 message 含错误提示，表示登录明确失败
     - confirmed=False 且 message 为"未确认"，表示超时且表单仍存在
+
+    timeout   等待上限（秒），默认 LOGIN_RESULT_TIMEOUT
+    detectors 错误提示检测器列表（按顺序检查），默认只查登录失败提示。
+              验证码模式会传入 [_detect_captcha_error, _detect_login_error]，
+              保证「验证码错误」优先于「账号密码错误」被识别。
     """
-    deadline = time.monotonic() + LOGIN_RESULT_TIMEOUT
+    deadline = time.monotonic() + (LOGIN_RESULT_TIMEOUT if timeout is None
+                                    else float(timeout))
+    checks = list(detectors) if detectors else [_detect_login_error]
 
     while time.monotonic() < deadline:
-        error = await _detect_login_error(page)
-        if error:
-            return False, error
+        # 先看是否已经出现成功特征（覆盖「表单提交后 URL 不变」的站点）
+        try:
+            success_hint = await _detect_login_success(page)
+            if success_hint:
+                return True, "登录成功"
+        except Exception:
+            pass
+        for detect in checks:
+            error = await detect(page)
+            if error:
+                return False, error
 
         if pwd_field is not None:
             try:
@@ -191,6 +281,19 @@ async def _wait_login_result(page, pwd_field, original_url):
         await asyncio.sleep(0.4)
 
     return False, "未确认登录结果(登录表单仍存在)"
+
+
+async def _wait_captcha_result(page, pwd_field, original_url, timeout=None):
+    """验证码模式下的结果等待。
+
+    超时使用 CAPTCHA_RESULT_TIMEOUT（默认 6 秒），比普通登录短，
+    避免批量登录被验证码流程拖慢。
+    """
+    return await _wait_login_result(
+        page, pwd_field, original_url,
+        timeout=(app_config.CAPTCHA_RESULT_TIMEOUT if timeout is None
+                 else timeout),
+        detectors=[_detect_captcha_error, _detect_login_error])
 
 
 # ============ 登录上下文与模板解析 ============
@@ -637,13 +740,36 @@ async def _locate_and_fill(page, template, label, ctx, username, password,
     return result
 
 
-async def _submit_login(page, template, label, ctx, pwd_field):
-    """点击登录按钮（模板按钮选择器优先）。返回 dict。"""
+async def _submit_login(page, template, label, ctx, pwd_field,
+                        enter_field=None, method='auto'):
+    """提交登录表单。返回 dict。
+
+    method='auto'（默认）：优先在最后一个输入框里**按回车**提交。
+        绝大多数站点（实测约 90%）在输入框按回车即可登录；
+        而登录按钮有时是 <a> 或受 JS 事件约束，点击未必生效。
+        回车若无反应，由调用方回退到点击登录按钮（method='button'）。
+    method='enter'：只按回车。
+    method='button'：只点击登录按钮（模板按钮选择器优先）。
+    """
     result = {'ok': False, 'stage': STAGE_BUTTON, 'reason': '', 'detail': '',
-              'original_url': '', 'button_ms': 0}
+              'original_url': '', 'button_ms': 0, 'method': ''}
 
     selectors = template.get('login_button_selectors', []) or []
     original_url = page.url
+
+    if method in ('auto', 'enter') and enter_field is not None:
+        enter_started = time.monotonic()
+        try:
+            await enter_field.press('Enter', timeout=3000)
+            result['method'] = 'enter'
+            result['button_ms'] = int((time.monotonic() - enter_started) * 1000)
+            result.update(ok=True, original_url=original_url)
+            Logger.info(ctx.log(f"{label}已用回车提交登录表单"))
+            return result
+        except Exception as e:
+            Logger.info(ctx.log(
+                f"{label}回车提交失败（{str(e)[:50]}），回退点击登录按钮"))
+            result['method'] = ''
 
     button_started = time.monotonic()
     clicked, info = await click_login_button_detailed(
@@ -657,7 +783,8 @@ async def _submit_login(page, template, label, ctx, pwd_field):
                             f"（来源={source}，"
                             f"selector={_safe_selector(info.get('by'), info.get('value'))}），"
                             f"耗时={info.get('elapsed_ms')}ms"))
-        result.update(ok=True, original_url=original_url, button_ms=button_ms)
+        result.update(ok=True, original_url=original_url, button_ms=button_ms,
+                      method='button')
         return result
 
     Logger.warning(ctx.log(f"{label}未找到登录按钮"
@@ -665,6 +792,496 @@ async def _submit_login(page, template, label, ctx, pwd_field):
     result.update(reason=FAIL_BUTTON_NOT_FOUND, detail='所有登录按钮选择器均未命中',
                   button_ms=button_ms)
     return result
+
+
+async def _click_refresh_link(page):
+    """尝试点击「换一张 / 刷新 / 看不清」等刷新链接。返回是否点击成功。"""
+    try:
+        handle = await page.evaluate_handle(
+            """(keywords) => {
+                const nodes = document.querySelectorAll(
+                    'a, span, div, button, i, em, label, td, li');
+                for (const el of nodes) {
+                    const text = (el.textContent || '').trim();
+                    if (!text || text.length > 20) continue;
+                    let matched = false;
+                    for (const kw of keywords) {
+                        if (text.indexOf(kw) >= 0) { matched = true; break; }
+                    }
+                    if (!matched) continue;
+                    const r = el.getBoundingClientRect();
+                    if (r.width <= 0 || r.height <= 0) continue;
+                    return el;
+                }
+                return null;
+            }""", CAPTCHA_REFRESH_LINK_KEYWORDS)
+    except Exception:
+        return False
+    try:
+        element = handle.as_element() if handle is not None else None
+        if element is None:
+            return False
+        await element.click(timeout=2000)
+        return True
+    except Exception:
+        return False
+
+
+async def _refresh_captcha(page, img, captcha, template=None, label='',
+                           ctx=None, pwd_field=None):
+    """刷新验证码图片，并重新定位验证码输入框。
+
+    步骤：
+    1. 点击验证码图片本身（多数站点点击图片即刷新）；
+    2. 等待 CAPTCHA_REFRESH_WAIT；
+    3. 重新截图与旧图比较；字节未变化时尝试点击「换一张 / 刷新 / 看不清」链接；
+    4. 重新定位验证码输入框（页面可能已重绘）并清空。
+
+    刷新失败不抛异常，只记录日志后继续下一轮。
+    """
+    log = ctx.log if ctx is not None else (lambda message: message)
+    element = img.get('element') if isinstance(img, dict) else None
+    previous = img.get('screenshot') if isinstance(img, dict) else None
+
+    try:
+        if element is not None:
+            await element.scroll_into_view_if_needed(timeout=1000)
+    except Exception:
+        pass
+
+    try:
+        if element is not None:
+            await element.click(timeout=2000)
+            Logger.info(log(f"{label}已点击验证码图片，尝试刷新"))
+    except Exception as e:
+        Logger.info(log(f"{label}点击验证码图片未生效（{str(e)[:60]}）"))
+
+    await asyncio.sleep(app_config.CAPTCHA_REFRESH_WAIT)
+
+    # 校验图片是否真的刷新了：重新截图与旧图比较
+    changed = True
+    try:
+        if element is not None:
+            current = await element.screenshot(type='png', timeout=3000)
+            changed = bool(previous is None or current != previous)
+    except Exception:
+        changed = True
+
+    if not changed:
+        if await _click_refresh_link(page):
+            Logger.info(log(f"{label}已点击「换一张 / 刷新」链接"))
+            await asyncio.sleep(app_config.CAPTCHA_REFRESH_WAIT)
+        else:
+            Logger.info(log(f"{label}未找到刷新链接，验证码图片可能未更新"))
+
+    # 重新定位验证码输入框（页面可能已重绘），并清空内容
+    if template is not None:
+        try:
+            found = await find_captcha_field_quick(
+                page, template.get('captcha_selectors') or None,
+                exclude_fields=[pwd_field] if pwd_field is not None else None)
+            if found.get('hit'):
+                captcha['field'] = found['field']
+        except Exception:
+            pass
+
+    try:
+        if captcha.get('field') is not None:
+            await captcha['field'].fill('', timeout=2000)
+    except Exception:
+        pass
+
+
+async def _diagnose_form(page):
+    """收集页面上输入框的摘要，用于排查「找不到登录表单」。"""
+    try:
+        data = await page.evaluate("""() => {
+            const items = [];
+            const nodes = document.querySelectorAll(
+                'input, textarea, [contenteditable="true"]');
+            nodes.forEach((el, i) => {
+                if (i >= 12) return;
+                const visible = !!(el.offsetWidth || el.offsetHeight
+                                   || el.getClientRects().length);
+                items.push('type=' + (el.type || '') +
+                           ' name=' + (el.name || '') +
+                           ' id=' + (el.id || '') +
+                           ' ph=' + (el.placeholder || '') +
+                           ' vis=' + (visible ? '1' : '0'));
+            });
+            return {count: items.length, items: items,
+                    frames: window.frames.length,
+                    title: document.title, url: location.href};
+        }""")
+    except Exception:
+        return ''
+    if not isinstance(data, dict):
+        return ''
+    return ('inputs=%d frames=%d title=%s url=%s %s'
+            % (data.get('count', 0), data.get('frames', 0),
+               str(data.get('title', ''))[:30], str(data.get('url', ''))[:60],
+               ' | '.join(data.get('items') or [])))[:400]
+
+
+async def _ensure_credentials_filled(page, template, user_field, pwd_field,
+                                     username, password, label, ctx):
+    """确保用户名/密码已经正确写入（页面可能被清空或重绘）。
+
+    有些站点在「验证码错误」后会把整个表单清空（账号密码一起没），
+    也有站点在验证码框获得焦点时重置表单。因此每次提交前都重填一次并校验，
+    填不进去时先重新定位字段再试一次。
+
+    返回 (user_field, pwd_field, ok)。
+    """
+    pairs = (
+        ('用户名', 'username_selectors', username),
+        ('密码', 'password_selectors', password),
+    )
+    for name, selector_key, value in pairs:
+        field = user_field if selector_key == 'username_selectors' else pwd_field
+        ok, reason = ((await input_text_detailed(field, value))
+                      if field is not None else (False, 'element_none'))
+        if not ok:
+            try:
+                found = await find_by_selectors_detailed(
+                    page, list(template.get(selector_key) or []), selector_key,
+                    budget=SELECTOR_LOOKUP_BUDGET)
+            except Exception:
+                found = {}
+            if found.get('hit'):
+                field = found['field']
+                ok, reason = await input_text_detailed(field, value)
+        if selector_key == 'username_selectors':
+            user_field = field
+        else:
+            pwd_field = field
+        if not ok:
+            Logger.warning(ctx.log(f"{label}重新填写{name}失败：{reason}"))
+            return user_field, pwd_field, False
+    return user_field, pwd_field, True
+
+
+async def _activate_captcha_field(field, wait=0.8):
+    """点击（聚焦）验证码输入框。
+
+    有些站点在验证码输入框**获得焦点时就会刷新验证码**（例如 H3C 网络设备
+    WebUI：点击 #vldcode 会把验证码图片的 src 换成带时间戳的新地址）。
+    必须先触发这次刷新、再截图识别，否则识别到的是旧码，提交必然失败。
+    """
+    if field is None:
+        return
+    try:
+        await field.click(timeout=2000)
+    except Exception:
+        pass
+    if wait > 0:
+        await asyncio.sleep(wait)
+
+
+async def _solve_captcha_and_submit(page, template, label, ctx, captcha,
+                                    pwd_field, user_field=None,
+                                    username='', password=''):
+    """自动识别验证码并提交登录。
+
+    流程（最多 CAPTCHA_OCR_MAX_ATTEMPTS 次）：
+        定位验证码图片 -> 截图 -> OCR -> 校验 -> 填写 -> 提交 -> 判定结果
+        - 识别失败（非法字符 / 低置信度）：刷新图片后重试，不提交；
+        - 服务端提示「验证码错误」：刷新图片后重试；
+        - 服务端提示账号 / 密码错误：立即停止，不重试；
+        - 登录成功：结束。
+
+    返回 dict：ok / detail / attempts / last_text
+
+    user_field / username / password：
+        每次提交前都要**重新填写**用户名与密码。服务端在验证码错误后
+        通常会重新渲染整个登录表单，用户名 / 密码输入框会被清空；
+        若不重新填写，第二次提交会带着空账号，被服务端判为「密码错误」
+        而中断重试（这是真实场景下踩到的坑）。
+    """
+    result = {'ok': False, 'detail': '', 'attempts': 0, 'last_text': ''}
+    max_attempts = max(1, int(app_config.CAPTCHA_OCR_MAX_ATTEMPTS))
+    budget = float(app_config.CAPTCHA_ATTEMPT_BUDGET)
+    image_selectors = list(template.get('captcha_image_selectors') or [])
+    field = captcha.get('field')
+    started_at = time.monotonic()
+
+    for attempt in range(1, max_attempts + 1):
+        # 时间预算：单次识别成功率不高（困难验证码约 15%），靠「多次独立重试」
+        # 累积成功率。在预算内尽量多试几次，比死磕单次识别更有效。
+        if time.monotonic() - started_at > budget:
+            Logger.info(ctx.log(
+                f"{label}验证码自动识别已达到时间预算 "
+                f"{budget:.0f} 秒（已尝试 {attempt - 1} 次），停止重试"))
+            break
+        result['attempts'] = attempt
+
+        # 先激活验证码输入框：部分站点在「获得焦点」时会刷新验证码，
+        # 必须先触发刷新再截图，否则识别的是旧码。
+        await _activate_captcha_field(captcha.get('field'))
+
+        image = await find_captcha_image(
+            page, field, image_selectors or None,
+            log=lambda message: Logger.info(ctx.log(message)))
+        if not image.get('hit'):
+            result['detail'] = '验证码图片未找到'
+            Logger.warning(ctx.log(
+                f"{label}未找到验证码图片，自动识别中止"
+                f"（已尝试 {attempt}/{max_attempts}）"))
+            return result
+
+        # 截图前先滚动到可见位置（保证截到的是完整的验证码图片）
+        try:
+            await image['element'].scroll_into_view_if_needed(timeout=1000)
+        except Exception:
+            pass
+
+        try:
+            # 用 canvas 取原始像素：元素截图会把 CSS 边框一起截进来，
+            # 那圈灰边会让 OCR 完全读不出字符。
+            png = await capture_captcha_image(image['element'], timeout=3000)
+            if not png:
+                raise RuntimeError('验证码图片取像素失败')
+        except Exception as e:
+            result['detail'] = '验证码图片截图失败'
+            Logger.warning(ctx.log(
+                f"{label}验证码图片截图失败（{str(e)[:60]}），刷新后重试"))
+            await _refresh_captcha(page, image, captcha, template, label, ctx,
+                                   pwd_field)
+            field = captcha.get('field')
+            continue
+
+        # 记住本次截图，供刷新后比较是否真的换了新图
+        image['screenshot'] = png
+
+        # OCR 必须放在线程里执行，否则会阻塞 Playwright 事件循环，
+        # 导致同一批次的其它设备全部卡住。
+        #
+        # 同一张图跑**全部预处理变体**，取其中最可信的合法结果。
+        #
+        # 实测：单用原始图约 3%~7%，加上「去彩色干扰掩膜 + 放大」变体后
+        # 约 15%（约 3 倍提升）；多变体对简单验证码同样稳定。
+        variant = None
+        try:
+            text, confidence = await asyncio.to_thread(recognizer.recognize,
+                                                       png, variant)
+        except TypeError:
+            # 兼容不支持 variant 参数的识别器实现
+            try:
+                text, confidence = await asyncio.to_thread(recognizer.recognize,
+                                                           png)
+            except Exception as e:
+                text, confidence = '', 0.0
+                Logger.warning(ctx.log(f"{label}验证码识别异常：{str(e)[:80]}"))
+        except Exception as e:
+            text, confidence = '', 0.0
+            Logger.warning(ctx.log(f"{label}验证码识别异常：{str(e)[:80]}"))
+
+        if not text:
+            Logger.info(ctx.log(
+                f"{label}验证码识别结果无效"
+                f"（置信度={confidence:.2f}，尝试 {attempt}/{max_attempts}），"
+                f"刷新后重试"))
+            result['last_text'] = ''
+            await _refresh_captcha(page, image, captcha, template, label, ctx,
+                                   pwd_field)
+            field = captcha.get('field')
+            continue
+
+        Logger.info(ctx.log(
+            f"{label}验证码识别：'{text}'（置信度={confidence:.2f}，"
+            f"尝试 {attempt}/{max_attempts}）"))
+
+        # 提交前重新填写用户名与密码并校验：
+        # 服务端在验证码错误后可能清空整个表单，也可能点击验证码框时重置表单。
+        user_field, pwd_field, creds_ok = await _ensure_credentials_filled(
+            page, template, user_field, pwd_field, username, password,
+            label, ctx)
+        if not creds_ok:
+            result['detail'] = '账号/密码无法填写（页面可能已被清空或重绘）'
+            Logger.warning(ctx.log(f"{label}{result['detail']}"))
+            return result
+
+        # 填写前后比对验证码图片指纹：若填写过程中验证码又被刷新了
+        # （部分站点在输入框获得焦点时刷新），必须重新识别并重新填写，
+        # 否则提交的是旧码。
+        fingerprint_before = await captcha_image_fingerprint(image.get('element'))
+        filled, reason = await input_text_detailed(field, text)
+        if not filled:
+            result['detail'] = _describe_fill_failure('验证码', reason)
+            Logger.warning(ctx.log(f"{label}{result['detail']}"))
+            return result
+        fingerprint_after = await captcha_image_fingerprint(image.get('element'))
+        if (fingerprint_before and fingerprint_after
+                and fingerprint_before != fingerprint_after):
+            Logger.info(ctx.log(f"{label}填写过程中验证码发生刷新，重新识别"))
+            try:
+                fresh_png = await capture_captcha_image(image['element'],
+                                                        timeout=3000)
+                fresh_text, fresh_conf = await asyncio.to_thread(
+                    recognizer.recognize, fresh_png, variant)
+            except Exception:
+                fresh_text = ''
+            if fresh_text:
+                text = fresh_text
+                filled, reason = await input_text_detailed(field, text)
+                if not filled:
+                    result['detail'] = _describe_fill_failure('验证码', reason)
+                    Logger.warning(ctx.log(f"{label}{result['detail']}"))
+                    return result
+                Logger.info(ctx.log(
+                    f"{label}验证码重新识别：'{text}'（置信度={fresh_conf:.2f}）"))
+        result['last_text'] = text
+
+        # 提交：优先在验证码输入框按回车（多数站点回车即可登录）。
+        # 若回车没有任何反应（既没成功也没报错），再回退到点击登录按钮。
+        submit = await _submit_login(page, template, label, ctx, pwd_field,
+                                    enter_field=field, method='auto')
+        if not submit.get('ok'):
+            result['detail'] = '登录提交失败'
+            return result
+
+        confirmed, detail = await _wait_captcha_result(
+            page, pwd_field, submit.get('original_url'),
+            timeout=1.5 if submit.get('method') == 'enter' else None)
+        if not confirmed and submit.get('method') == 'enter':
+            captcha_failed = await _detect_captcha_error(page)
+            auth_failed = await _detect_login_error(page)
+            if not captcha_failed and not auth_failed:
+                # 回车没有触发登录 -> 回退到点击登录按钮
+                Logger.info(ctx.log(f"{label}回车未触发登录，回退到点击登录按钮"))
+                submit = await _submit_login(page, template, label, ctx, pwd_field,
+                                            method='button')
+                if not submit.get('ok'):
+                    result['detail'] = '登录按钮点击失败'
+                    return result
+                confirmed, detail = await _wait_captcha_result(
+                    page, pwd_field, submit.get('original_url'))
+        if confirmed:
+            result['ok'] = True
+            result['detail'] = '登录成功'
+            return result
+
+        if await _detect_captcha_error(page):
+            Logger.info(ctx.log(
+                f"{label}服务端提示验证码错误，刷新后重试"
+                f"（尝试 {attempt}/{max_attempts}）"))
+            await _refresh_captcha(page, image, captcha, template, label, ctx,
+                                   pwd_field)
+            field = captcha.get('field')
+            continue
+
+        if _is_auth_error(detail):
+            result['detail'] = '账号或密码错误（不重试）'
+            Logger.warning(ctx.log(f"{label}{result['detail']}"))
+            return result
+
+        result['detail'] = f'登录结果未确认：{detail}'
+        return result
+
+    result['detail'] = (f'验证码自动识别失败（已尝试 {result["attempts"]} 次）'
+                        if result['attempts'] else '验证码自动识别失败')
+    Logger.warning(ctx.log(f"{label}{result['detail']}"))
+    # 失败退出前清空验证码框，避免把上一条错误验证码留在界面上
+    try:
+        if captcha.get('field') is not None:
+            await captcha['field'].fill('', timeout=1500)
+    except Exception:
+        pass
+    return result
+
+
+
+def _captcha_cache_key(template, label, page):
+    """「模板 + 页面」缓存键（用于记住该页面无验证码）。"""
+    try:
+        url = page.url
+    except Exception:
+        url = ''
+    return captcha_cache.make_key(label, (template or {}).get('name'), url)
+
+
+def _captcha_skip_reason(template, label, cache_key):
+    """判断是否可以跳过验证码查找；返回原因（不跳过时返回空串）。
+
+    只在「设备模板」上启用：
+      1) 模板显式声明无验证码（captcha_selectors 与
+         captcha_image_selectors 都是空列表）；
+      2) 之前已确认过「该模板 + 该页面无验证码」（持久化缓存）。
+    默认模板仍按内置规则检查，避免漏掉验证码。
+    """
+    if label != '设备模板':
+        return ''
+    tpl = template or {}
+    selectors = tpl.get('captcha_selectors')
+    image_selectors = tpl.get('captcha_image_selectors')
+    if (app_config.CAPTCHA_SKIP_WHEN_TEMPLATE_EMPTY
+            and isinstance(selectors, list) and not selectors
+            and isinstance(image_selectors, list) and not image_selectors):
+        return '模板声明无验证码'
+    if (app_config.CAPTCHA_ABSENT_CACHE_ENABLED
+            and captcha_cache.is_absent(cache_key)):
+        return '该模板+页面已确认无验证码（缓存）'
+    return ''
+
+
+async def _solve_captcha_if_hit(page, template, label, ctx, captcha, locate,
+                                username, password, outcome, started):
+    """验证码命中时执行「自动识别」或「人工兜底」。未命中返回 None。"""
+    if not captcha or not captcha.get('hit'):
+        return None
+
+    if app_config.CAPTCHA_AUTO_ENABLED and recognizer.is_available():
+        solved = await _solve_captcha_and_submit(
+            page, template, label, ctx, captcha, locate.get('pwd_field'),
+            user_field=locate.get('user_field'), username=username,
+            password=password)
+        outcome['recorded'] = TemplateManager.finish_recording()
+        outcome['elapsed_ms'] = int((time.monotonic() - started) * 1000)
+        outcome['captcha_attempts'] = solved.get('attempts', 0)
+        outcome['captcha'] = {
+            'source': captcha.get('source', ''),
+            'by': captcha.get('by', ''),
+            'value': captcha.get('value', ''),
+        }
+        if solved.get('ok'):
+            outcome.update(ok=True, stage=STAGE_RESULT, reason='ok',
+                           detail='登录成功（已自动通过验证码）')
+        else:
+            # 保留「模板已生成但未登录成功」的旧语义，界面仍可提示保存模板
+            outcome.update(ok=True, stage=STAGE_FILL, reason=FAIL_CAPTCHA,
+                           detail=solved.get('detail') or '验证码自动识别失败',
+                           safe_to_retry=False)
+        if outcome['elapsed_ms'] > app_config.CAPTCHA_ATTEMPT_BUDGET * 1000:
+            Logger.warning(ctx.log(
+                f"{label}本次带验证码尝试耗时 {outcome['elapsed_ms']}ms "
+                f"已超过单次尝试上限 "
+                f"{app_config.CAPTCHA_ATTEMPT_BUDGET * 1000}ms"))
+        return outcome
+
+    # ===== 原人工兜底分支保持完全不变 =====
+    try:
+        await captcha['field'].click(timeout=3000)
+        await captcha['field'].fill("")
+    except Exception:
+        pass
+    outcome['recorded'] = TemplateManager.finish_recording()
+    outcome['ok'] = True
+    outcome['stage'] = STAGE_FILL
+    outcome['reason'] = FAIL_CAPTCHA
+    outcome['detail'] = '需要验证码'
+    outcome['safe_to_retry'] = False
+    outcome['captcha'] = {
+        'source': captcha.get('source', ''),
+        'by': captcha.get('by', ''),
+        'value': captcha.get('value', ''),
+    }
+    outcome['elapsed_ms'] = int((time.monotonic() - started) * 1000)
+    Logger.warning(ctx.log(
+        f"需要验证码（{label}）：已定位验证码输入框"
+        f"（来源={captcha.get('source')}，"
+        f"selector={_safe_selector(captcha.get('by'), captcha.get('value'))}），"
+        f"本次不提交登录表单；模板选择器已录制，可直接保存为模板"))
+    return outcome
 
 
 async def _run_template_attempt(page, template, label, ctx, username, password):
@@ -678,9 +1295,18 @@ async def _run_template_attempt(page, template, label, ctx, username, password):
     }
 
     locate = await _locate_and_fill(page, template, label, ctx, username, password)
+    if not locate['ok']:
+        # SPA / 慢页面：表单常常在首屏之后才渲染，等一会儿再完整找一次
+        Logger.info(ctx.log(f"{label}首次未定位到登录表单，等待 2 秒后重试定位"))
+        await asyncio.sleep(2.0)
+        locate = await _locate_and_fill(page, template, label, ctx,
+                                        username, password)
     outcome['locate_ms'] = locate.get('locate_ms', 0)
     outcome['fill_ms'] = locate.get('fill_ms', 0)
     if not locate['ok']:
+        diagnosis = await _diagnose_form(page)
+        if diagnosis:
+            Logger.warning(ctx.log(f"{label}表单诊断：{diagnosis}"))
         outcome.update(stage=locate['stage'], reason=locate['reason'],
                        detail=locate['detail'])
         outcome['elapsed_ms'] = int((time.monotonic() - started) * 1000)
@@ -703,53 +1329,48 @@ async def _run_template_attempt(page, template, label, ctx, username, password):
         page_state = 'unknown'
     slow_page = slow_used_ms > 0 or page_state in ('loading', 'interactive')
     captcha_log = lambda message: Logger.info(ctx.log(message))
-    if slow_page:
-        # 慢速页面：允许为「延迟出现的验证码」保留一段有上限的等待。
-        # 该扩展预算在「模板候选 / 内置候选」两轮之间共享，基础扫描预算
-        # 与普通阶段一致，避免两轮等待叠加成十几秒（实测曾达 9.3 秒）。
-        captcha = await find_captcha_field_detailed(
-            page, template.get('captcha_selectors') or None,
-            budget=SELECTOR_LOOKUP_BUDGET,
-            extra_budget=SELECTOR_LOOKUP_READY_BUDGET,
-            exclude_fields=[locate.get('user_field'), locate.get('pwd_field')],
-            delayed_window=False,
-            log=captcha_log)
+
+    # 有些页面本来就没有验证码：设备模板把 captcha_selectors 存成空列表，
+    # 或者之前已确认过「该模板+该页面无验证码」。这两种情况直接跳过查找，
+    # 不再把「模板候选 + 内置候选」几十个选择器空跑一遍。
+    cache_key = _captcha_cache_key(template, label, page)
+    skip_reason = _captcha_skip_reason(template, label, cache_key)
+    if skip_reason:
+        captcha = {'hit': False, 'field': None, 'by': '', 'value': '',
+                   'reason': 'skipped', 'source': ''}
+        outcome['captcha_ms'] = 0
+        Logger.info(ctx.log(f"{label}跳过验证码查找（{skip_reason}），耗时=0ms"))
     else:
-        captcha = await find_captcha_field_quick(
-            page, template.get('captcha_selectors') or None,
-            exclude_fields=[locate.get('user_field'), locate.get('pwd_field')],
-            log=captcha_log)
-    captcha_ms = int((time.monotonic() - captcha_started) * 1000)
-    outcome['captcha_ms'] = captcha_ms
-    Logger.info(ctx.log(
-        f"{label}验证码检查结束："
-        f"{'发现验证码输入框' if captcha['hit'] else '未发现验证码输入框'}，"
-        f"耗时={captcha_ms}ms，页面状态={page_state}，"
-        f"慢速等待={'是（页面尚未就绪）' if slow_page else '否（页面已就绪，快速检查）'}"))
-    if captcha['hit']:
-        try:
-            await captcha['field'].click(timeout=3000)
-            await captcha['field'].fill("")
-        except Exception:
-            pass
-        outcome['recorded'] = TemplateManager.finish_recording()
-        outcome['ok'] = True
-        outcome['stage'] = STAGE_FILL
-        outcome['reason'] = FAIL_CAPTCHA
-        outcome['detail'] = '需要验证码'
-        outcome['safe_to_retry'] = False
-        outcome['captcha'] = {
-            'source': captcha.get('source', ''),
-            'by': captcha.get('by', ''),
-            'value': captcha.get('value', ''),
-        }
-        outcome['elapsed_ms'] = int((time.monotonic() - started) * 1000)
-        Logger.warning(ctx.log(
-            f"需要验证码（{label}）：已定位验证码输入框"
-            f"（来源={captcha.get('source')}，"
-            f"selector={_safe_selector(captcha.get('by'), captcha.get('value'))}），"
-            f"本次不提交登录表单；模板选择器已录制，可直接保存为模板"))
-        return outcome
+        if slow_page:
+            # 慢速页面：允许为「延迟出现的验证码」保留一段有上限的等待。
+            # 该扩展预算在「模板候选 / 内置候选」两轮之间共享，基础扫描预算
+            # 与普通阶段一致，避免两轮等待叠加成十几秒（实测曾达 9.3 秒）。
+            captcha = await find_captcha_field_detailed(
+                page, template.get('captcha_selectors') or None,
+                budget=SELECTOR_LOOKUP_BUDGET,
+                extra_budget=SELECTOR_LOOKUP_READY_BUDGET,
+                exclude_fields=[locate.get('user_field'),
+                                locate.get('pwd_field')],
+                delayed_window=False,
+                log=captcha_log)
+        else:
+            captcha = await find_captcha_field_quick(
+                page, template.get('captcha_selectors') or None,
+                exclude_fields=[locate.get('user_field'),
+                                locate.get('pwd_field')],
+                log=captcha_log)
+        captcha_ms = int((time.monotonic() - captcha_started) * 1000)
+        outcome['captcha_ms'] = captcha_ms
+        Logger.info(ctx.log(
+            f"{label}验证码检查结束："
+            f"{'发现验证码输入框' if captcha['hit'] else '未发现验证码输入框'}，"
+            f"耗时={captcha_ms}ms，页面状态={page_state}，"
+            f"慢速等待={'是（页面尚未就绪）' if slow_page else '否（页面已就绪，快速检查）'}"))
+    solved_outcome = await _solve_captcha_if_hit(
+        page, template, label, ctx, captcha, locate, username, password,
+        outcome, started)
+    if solved_outcome is not None:
+        return solved_outcome
 
     submit = await _submit_login(page, template, label, ctx, locate['pwd_field'])
     outcome['button_ms'] = submit.get('button_ms', 0)
@@ -769,11 +1390,38 @@ async def _run_template_attempt(page, template, label, ctx, username, password):
                                f"{TEMPLATE_ATTEMPT_BUDGET * 1000}ms"))
 
     if confirmed:
+        # 真正查找过验证码且确认没有 + 登录成功 -> 记住这个结论，
+        # 下次同一模板/页面直接跳过验证码查找。
+        if (not skip_reason and not captcha.get('hit')
+                and app_config.CAPTCHA_ABSENT_CACHE_ENABLED):
+            if captcha_cache.mark_absent(cache_key):
+                Logger.info(ctx.log(
+                    f"{label}已记住「该模板+页面无验证码」，"
+                    f"下次登录将跳过验证码查找"))
         outcome['ok'] = True
         outcome['stage'] = STAGE_RESULT
         outcome['reason'] = 'ok'
         outcome['detail'] = '登录成功'
         return outcome
+
+    # 跳过验证码查找后，服务端仍然提示验证码错误 -> 说明页面其实有验证码，
+    # 立刻清掉「无验证码」记录并重新完整查找一次（自我修复，避免缓存永久失效）。
+    if (skip_reason and detail
+            and any(word in str(detail).lower() for word in
+                    ('验证码', 'captcha', '校验码', '图形码'))):
+        captcha_cache.clear(cache_key)
+        Logger.warning(ctx.log(
+            f"{label}跳过验证码查找后服务端仍提示验证码错误，"
+            f"已清除「无验证码」记录并重新查找验证码"))
+        retry_captcha = await find_captcha_field_quick(
+            page, None,
+            exclude_fields=[locate.get('user_field'), locate.get('pwd_field')])
+        if retry_captcha.get('hit'):
+            solved_outcome = await _solve_captcha_if_hit(
+                page, template, label, ctx, retry_captcha, locate,
+                username, password, outcome, started)
+            if solved_outcome is not None:
+                return solved_outcome
 
     outcome['stage'] = STAGE_RESULT
     outcome['reason'] = FAIL_AUTH_REJECTED if _is_auth_error(detail) else FAIL_UNKNOWN
@@ -783,7 +1431,11 @@ async def _run_template_attempt(page, template, label, ctx, username, password):
 
 
 async def _run_generic_attempt(page, ctx, username, password):
-    """通用元素发现兜底（兼容没有完整模板的旧配置）。"""
+    """通用元素发现兜底（兼容没有完整模板的旧配置）。
+
+    注意：通用发现路径暂不自动处理验证码（本版只做增量），
+    需要验证码自动识别的页面请使用模板路径（_run_template_attempt）。
+    """
     started = time.monotonic()
     outcome = {'ok': False, 'stage': '', 'reason': '', 'detail': '',
                'elapsed_ms': 0, 'safe_to_retry': False, 'recorded': None,
@@ -1101,11 +1753,15 @@ async def _login_with_fallback(page, ctx, username, password, template_name,
 
     if outcome['ok']:
         if outcome['reason'] == FAIL_CAPTCHA:
+            # 固定文案改为使用 outcome['detail']：
+            # 自动识别关闭 / 不可用 -> 「需要验证码」
+            # 自动识别失败           -> 「验证码自动识别失败（已尝试 N 次）」
+            captcha_detail = outcome.get('detail') or '需要验证码'
             if uses_device_template:
-                summary['device_result'] = '需要验证码'
+                summary['device_result'] = captcha_detail
             else:
-                summary['default_result'] = '需要验证码'
-            _finish('需要验证码，未能确认登录结果', False,
+                summary['default_result'] = captcha_detail
+            _finish(f'{captcha_detail}，未能确认登录结果', False,
                     resolved['name'], resolved['path'], outcome)
             return outcome
         if uses_device_template:
@@ -1260,7 +1916,10 @@ async def login_device(session, device, entry=ENTRY_SINGLE):
 
         if outcome['ok']:
             if outcome['reason'] == FAIL_CAPTCHA:
-                return True, f"{name}: 已完成", outcome['recorded']
+                # 如实反映失败原因（自动识别失败 / 需要验证码），
+                # 不再统一显示「已完成」而让人误以为登录成功
+                detail = outcome.get('detail') or '需要验证码'
+                return True, f"{name}: {detail}", outcome['recorded']
             if outcome['detail'] == '已登录':
                 return True, f"{name}: 已登录", outcome['recorded']
             return True, f"{name}: OK（模板={_final_template_label(outcome)}）", \
@@ -1365,25 +2024,16 @@ async def quick_login(name, url, username, password, template_name="default"):
     与分组登录使用完全相同的模板优先与默认模板回退规则，
     日志也走同一套 [LOGIN_SUMMARY] 汇总逻辑。
 
-    快捷登录结束后，选中本实例的第一个标签页并激活到前台
-    （与分组登录一致：每个浏览器实例各自选中自己的第一个标签页）。
+    快捷登录完成后**不**切换标签页：保持登录所在的标签页，
+    不改变用户当前的浏览位置。
+    （与分组登录行为不同：分组登录完成后仍会切回该实例的第一个标签页。）
     """
-    success, message, recorded = await _quick_login_inner(
+    return await _quick_login_inner(
         name, url, username, password, template_name)
-
-    # 每个浏览器实例在完成登录流程后，选中该实例的第一个标签页
-    session = BrowserManager.get(QUICK_SESSION)
-    if session is not None:
-        try:
-            await session.select_first_tab()
-        except Exception as e:
-            log_exception(e, f"快捷登录 {name} 选中第一个标签页")
-
-    return success, message, recorded
 
 
 async def _quick_login_inner(name, url, username, password, template_name="default"):
-    """快捷登录主体逻辑（由 quick_login 包装，负责实例级收尾动作）"""
+    """快捷登录主体逻辑（不涉及实例级收尾动作）"""
     ctx = LoginContext(name, ENTRY_QUICK)
     TemplateManager.start_recording()
 
@@ -1416,9 +2066,12 @@ async def _quick_login_inner(name, url, username, password, template_name="defau
         if outcome['ok']:
             if outcome['reason'] == FAIL_CAPTCHA:
                 # 验证码页面：模板已生成（用户名/密码/验证码选择器已录制），
-                # 但登录未提交 —— 两者必须区分，不得混为一谈。
-                return False, (f"✗ {name}: 需要验证码"
-                               f"（模板已生成，未提交登录）"), outcome['recorded']
+                # 但登录未成功 —— 两者必须区分，不得混为一谈。
+                captcha_detail = outcome.get('detail') or '需要验证码'
+                suffix = ('（模板已生成，未提交登录）'
+                          if captcha_detail == '需要验证码' else '')
+                return False, (f"✗ {name}: {captcha_detail}{suffix}"), \
+                    outcome['recorded']
             if outcome['detail'] == '已登录':
                 return True, f"✓ {name}: 已登录", outcome['recorded']
             return True, f"✓ {name}: 登录完成（模板={_final_template_label(outcome)}）", \

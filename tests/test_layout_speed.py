@@ -20,6 +20,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# 与 main.py 保持一致：源码运行时若浏览器已按「路径 0」安装，则沿用同一路径模式
+os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", "0")
 
 for _stream in (sys.stdout, sys.stderr):
     try:
@@ -238,7 +240,14 @@ async def _login_once(url, template='default', username='admin', password='pass1
 
 async def test_login_speed():
     import appcore.login_engine as le
+    from appcore import config as app_config
     from test_server import LoginHandler, TestServer
+
+    # 本用例验证的是历史行为：「发现验证码输入框即停止，不提交登录表单」。
+    # 验证码自动识别（V6.0.1 起）开启后会尝试 OCR，因此这里必须关闭，
+    # 保持原断言不变。
+    original_auto = app_config.CAPTCHA_AUTO_ENABLED
+    app_config.CAPTCHA_AUTO_ENABLED = False
 
     slow_calls = []
     original_detailed = le.find_captcha_field_detailed
@@ -281,6 +290,7 @@ async def test_login_speed():
                   f"recorded={recorded}")
     finally:
         le.find_captcha_field_detailed = original_detailed
+        app_config.CAPTCHA_AUTO_ENABLED = original_auto
 
 
 async def _login_in_session(url, session_name):

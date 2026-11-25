@@ -17,6 +17,7 @@ from PyQt6.QtCore import QEvent, QSize, Qt, QThreadPool, QTimer, pyqtSlot, pyqtS
 from PyQt6.QtGui import QAction, QColor, QFontMetrics, QIcon, QPainter, QPen
 from PyQt6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QFrame,
@@ -70,6 +71,7 @@ from appui.theme import (
     base_font,
 )
 
+from appcore import config as app_config
 from appcore import devices as device_store
 from appcore.automation import get_loop
 from appcore.browser import BrowserManager, BrowserService
@@ -403,6 +405,33 @@ class LoginWindow(QMainWindow):
         self.filter_btn.clicked.connect(self.on_search_clicked)
         search_layout.addWidget(self.filter_btn)
         right_layout.addLayout(search_layout)
+
+        # ---------- 验证码自动识别开关 ----------
+        # 绑定 appcore.config.CAPTCHA_AUTO_ENABLED（运行期直接改配置项，
+        # 登录引擎通过模块属性读取，因此切换后立即生效，无需重启）。
+        self.captcha_auto_checkbox = QCheckBox("自动识别验证码（数字+字母）",
+                                               right_panel)
+        self.captcha_auto_checkbox.setChecked(
+            bool(app_config.CAPTCHA_AUTO_ENABLED))
+        self.captcha_auto_checkbox.setToolTip(
+            "开启后自动识别登录页的 4 位数字+字母图片验证码并自动提交；\n"
+            "识别失败会自动刷新重试（最多 4 次）。\n"
+            "关闭后保持原有行为：检测到验证码即停止，交由人工处理。")
+        self.captcha_auto_checkbox.toggled.connect(self.on_captcha_auto_toggled)
+        right_layout.addWidget(self.captcha_auto_checkbox)
+
+        # ---------- 验证码是否区分大小写 ----------
+        # 勾选 = 原样提交识别结果（区分大小写的站点必须这样）；
+        # 取消 = 识别后统一转大写（仅适用于不区分大小写且 OCR 大小写不稳的站点）。
+        self.captcha_case_checkbox = QCheckBox("验证码区分大小写", right_panel)
+        self.captcha_case_checkbox.setChecked(
+            bool(app_config.CAPTCHA_OCR_CASE_SENSITIVE))
+        self.captcha_case_checkbox.setToolTip(
+            "默认勾选：识别结果原样提交。\n"
+            "站点区分大小写时必须勾选，否则统一转大写会把正确答案改错；\n"
+            "站点不区分大小写时，勾选与不勾选都能通过。")
+        self.captcha_case_checkbox.toggled.connect(self.on_captcha_case_toggled)
+        right_layout.addWidget(self.captcha_case_checkbox)
 
         # ---------- 设备列表区 ----------
         device_section = QWidget()
@@ -770,6 +799,25 @@ class LoginWindow(QMainWindow):
             item.setForeground(QColor(_LOG_LEVEL_COLORS.get(level, TEXT_PRIMARY)))
             self.log_text.addItem(item)
         self._update_log_count()
+
+    # ============ 验证码自动识别开关 ============
+    def on_captcha_auto_toggled(self, checked):
+        """切换「自动识别验证码」开关（立即生效，无需重启）。
+
+        开关写入 appcore.config.CAPTCHA_AUTO_ENABLED：
+        登录引擎通过模块属性读取该值，因此所有登录入口都会立即生效。
+        """
+        app_config.CAPTCHA_AUTO_ENABLED = bool(checked)
+        Logger.info(f"验证码自动识别已{'开启' if checked else '关闭'}")
+
+    def on_captcha_case_toggled(self, checked):
+        """切换「验证码区分大小写」。
+
+        勾选 = 原样提交识别结果（区分大小写的站点必须这样）；
+        取消 = 识别后统一转大写。
+        """
+        app_config.CAPTCHA_OCR_CASE_SENSITIVE = bool(checked)
+        Logger.info(f"验证码区分大小写已{'开启（原样提交）' if checked else '关闭（统一转大写）'}")
 
     # ============ 快捷登录 ============
     def on_quick_login(self):
@@ -1875,7 +1923,7 @@ class LoginWindow(QMainWindow):
 【注意事项】
 • 切换电脑后需重新导入Excel
 • 用户名密码已自动加密
-• 部分网站需要验证码
+• 图片验证码（数字+大小写字母）支持自动识别，可在右上角开关一键关闭
 • 如登录失败请检查网络"""
 
         msg = MessageBox("使用说明", help_text, self)

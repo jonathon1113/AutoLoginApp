@@ -5,6 +5,7 @@
 - /do_login   处理登录：用户名 admin + 密码 pass123 成功，其余返回错误提示
 - /dashboard  登录成功后的页面
 - /captcha    带验证码输入框的登录页
+- /captcha_ocr 带图片验证码的登录页（4 位数字+大小写字母，服务端不区分大小写）
 - /slow       响应较慢的页面（用于超时/等待测试）
 - /dedicated  专用选择器页面（id=devUser/devPass/devLogin，通用模板无法命中）
 - /generic    通用登录页面（name=username/password，通用模板可命中）
@@ -15,6 +16,9 @@
               UserName+UserPasswd / loginName+password+checkCode / Ant Design+Angular）
 """
 
+import io
+import os
+import random
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -43,10 +47,184 @@ CAPTCHA_PAGE = """<!DOCTYPE html>
 </body></html>
 """
 
+# ============ 验证码错误后「清空账号密码」的页面 ============
+CAPTCHA_CLEAR_PAGE = """<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>验证码错误清空表单</title></head>
+<body>
+  <h1>验证码错误清空表单</h1>
+  {error_block}
+  <form method="POST" action="/do_login_clear">
+    <input type="text" id="username" name="username" placeholder="用户名"
+           value="{username}">
+    <input type="password" id="password" name="password" placeholder="密码"
+           value="{password}">
+    <input type="text" id="captcha" name="captcha" placeholder="验证码">
+    <img id="captchaImg" alt="验证码" src="/captcha_clear_img">
+    <button type="submit" id="loginBtn">登录</button>
+  </form>
+</body></html>
+"""
+
+
+# ============ 「怪异占位符 + check-code 图片」页面 ============
+# 用户反馈：这个页面在加入验证码识别之前能登录，之后账号/密码/验证码框都定位不到。
+# 注意占位符是随机串（K5 / 114 / 2iEb4），不是「用户名/密码/验证码」。
+WEIRD_PLACEHOLDER_PAGE = """<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>怪异占位符登录</title></head>
+<body>
+  <form method="POST" action="/do_login_weird">
+    <input tabindex="1" type="text" autocomplete="off" placeholder="K5"
+           name="username" class="el-input_inner">
+    <input tabindex="2" type="password" autocomplete="off" placeholder="114"
+           name="password" class="el-input inner">
+    <input tabindex="3" type="text" autocomplete="off" placeholder="2iEb4"
+           name="captcha" class="el-input_inner">
+    <img data-v-198e4561="" draggable="false"
+         src="/captcha_weird_img" alt="Ab4" class="check-code">
+    <button type="submit">登录</button>
+  </form>
+</body></html>
+"""
+
+
+# ============ 内联 SVG 验证码页面（el-input / vue 风格）============
+CAPTCHA_SVG_PAGE = """<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>SVG 验证码登录</title></head>
+<body>
+  <h1>SVG 验证码登录</h1>
+  {error_block}
+  <form method="POST" action="/do_login_svg">
+    <input type="text" id="username" name="username" placeholder="用户名">
+    <input type="password" id="password" name="password" placeholder="密码">
+    <div class="code-content" data-v-9574f9a0>
+      <svg xmlns="http://www.w3.org/2000/svg" width="150" height="50"
+           viewBox="0 0 150 50">
+        <rect width="100%" height="100%" fill="#ffffff"/>
+        {glyphs}
+      </svg>
+    </div>
+    <input class="el-input__inner" id="captcha" name="captcha" type="text"
+           autocomplete="off" placeholder="验证码">
+    <button class="el-button" type="submit" id="loginBtn">登录</button>
+  </form>
+</body></html>
+"""
+
+
+def svg_glyphs(code):
+    """把 4 位验证码渲染成 SVG <text> 元素（模拟站点用 <path> 的写法）。"""
+    parts = []
+    for index, char in enumerate(code):
+        parts.append(
+            '<text x="%d" y="38" font-size="30" font-family="Arial" '
+            'fill="#73635a">%s</text>' % (10 + index * 35, char))
+    return ''.join(parts)
+
+
 DASHBOARD_PAGE = """<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>控制台</title></head>
 <body><h1>控制台</h1><p id="welcome">欢迎回来</p></body></html>
 """
+
+# ============ 图片验证码（4 位数字 + 大小写字母）============
+# 服务端不区分大小写：form["captcha"].upper() == CODE.upper()
+CAPTCHA_CHARSET = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+# 生成验证码图片时使用的字体候选（Windows 自带字体优先）
+_CAPTCHA_FONT_PATHS = (
+    r'C:\Windows\Fonts\arialbd.ttf',
+    r'C:\Windows\Fonts\arial.ttf',
+    r'C:\Windows\Fonts\consola.ttf',
+    r'C:\Windows\Fonts\couriernew.ttf',
+)
+
+
+def _captcha_font(size):
+    """取一个可用的验证码字体（找不到 TrueType 时退回 Pillow 默认字体）。"""
+    from PIL import ImageFont
+    for path in _CAPTCHA_FONT_PATHS:
+        if os.path.exists(path):
+            try:
+                return ImageFont.truetype(path, size)
+            except Exception:
+                continue
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        return ImageFont.load_default()
+
+
+def make_captcha_png(code, width=120, height=40):
+    """生成带干扰线与噪点的验证码图片（PNG 字节）。
+
+    不依赖任何外部资源，纯 Pillow 绘制。
+    """
+    from PIL import Image, ImageDraw
+    image = Image.new('RGB', (width, height), (250, 250, 250))
+    draw = ImageDraw.Draw(image)
+
+    # 干扰线 1~3 条
+    for _ in range(random.randint(1, 3)):
+        color = (random.randint(120, 220), random.randint(120, 220),
+                 random.randint(120, 220))
+        draw.line([(random.randint(0, width), random.randint(0, height)),
+                   (random.randint(0, width), random.randint(0, height))],
+                  fill=color, width=random.randint(1, 2))
+
+    # 少量噪点
+    for _ in range(random.randint(20, 60)):
+        draw.point((random.randint(0, width - 1), random.randint(0, height - 1)),
+                   fill=(random.randint(0, 255), random.randint(0, 255),
+                         random.randint(0, 255)))
+
+    # 字符（轻微旋转 + 随机位置）
+    step = max(8, width // (len(code) + 1))
+    for index, char in enumerate(code):
+        font = _captcha_font(random.randint(22, 28))
+        char_image = Image.new('RGBA', (step, height), (255, 255, 255, 0))
+        char_draw = ImageDraw.Draw(char_image)
+        char_draw.text((2, 4), char, font=font,
+                       fill=(random.randint(0, 90), random.randint(0, 90),
+                             random.randint(0, 90)))
+        try:
+            char_image = char_image.rotate(random.uniform(-18, 18), expand=True,
+                                           resample=Image.BICUBIC)
+        except Exception:
+            pass
+        image.paste(char_image,
+                    (index * step + random.randint(0, 4), random.randint(0, 6)),
+                    char_image)
+
+    buffer = io.BytesIO()
+    image.save(buffer, format='PNG')
+    return buffer.getvalue()
+
+
+def random_captcha_code():
+    """生成一个 4 位「数字 + 大小写字母」验证码。"""
+    return ''.join(random.choice(CAPTCHA_CHARSET) for _ in range(4))
+
+
+# 带图片验证码的登录页：点击图片即刷新验证码
+CAPTCHA_OCR_PAGE = """<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>图形验证码登录</title></head>
+<body>
+  <h1>图形验证码登录</h1>
+  {error_block}
+  <form method="POST" action="/do_login_captcha">
+    <input type="text" id="username" name="username" placeholder="用户名">
+    <input type="password" id="password" name="password" placeholder="密码">
+    <div class="captcha-row">
+      <img id="captchaImg" alt="验证码" title="点击刷新验证码"
+           src="/captcha_ocr_img?t={token}"
+           onclick="this.src='/captcha_ocr_img?t={token}&amp;r=' + Date.now();">
+      <input type="text" id="captcha" name="captcha" placeholder="验证码">
+    </div>
+    <button type="submit" id="loginBtn">登录</button>
+  </form>
+</body></html>
+"""
+
 
 # 设备专用模板页面：元素 id 为专有值，通用模板的 name/id 候选均无法命中
 DEDICATED_PAGE = """<!DOCTYPE html>
@@ -345,6 +523,10 @@ ROLE_PAGES = {
 class LoginHandler(BaseHTTPRequestHandler):
     # 统计登录提交次数（用于验证“不会重复提交”）
     post_count = 0
+    # 当前生效的图片验证码（每次请求验证码图片时刷新）
+    current_captcha_code = ''
+    # 图片令牌 -> 验证码（同一令牌始终返回同一个验证码）
+    captcha_codes = {}
 
     def log_message(self, fmt, *args):  # 静默访问日志
         pass
@@ -357,12 +539,77 @@ class LoginHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _send_bytes(self, data, content_type='image/png', status=200):
+        """发送二进制内容（验证码图片）。"""
+        self.send_response(status)
+        self.send_header('Content-Type', content_type)
+        self.send_header('Content-Length', str(len(data)))
+        self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate')
+        self.end_headers()
+        self.wfile.write(data)
+
     def do_GET(self):
         path = urlparse(self.path).path
         if path in ('/', '/login'):
             self._send(LOGIN_PAGE)
         elif path == '/captcha':
             self._send(CAPTCHA_PAGE)
+        elif path == '/captcha_clear':
+            code = random_captcha_code()
+            LoginHandler.captcha_codes['clear'] = code
+            LoginHandler.current_captcha_code = code
+            self._send(CAPTCHA_CLEAR_PAGE.format(error_block='',
+                                                 username='',
+                                                 password=''))
+        elif path == '/captcha_clear_img':
+            code = random_captcha_code()
+            LoginHandler.captcha_codes['clear_img'] = code
+            LoginHandler.current_captcha_code = code
+            try:
+                png = make_captcha_png(code)
+            except Exception:
+                self._send('<html><body>no pillow</body></html>', 500)
+                return
+            self._send_bytes(png, 'image/png')
+        elif path == '/weird':
+            self._send(WEIRD_PLACEHOLDER_PAGE)
+        elif path == '/captcha_weird_img':
+            code = random_captcha_code()
+            LoginHandler.captcha_codes['weird'] = code
+            LoginHandler.current_captcha_code = code
+            try:
+                png = make_captcha_png(code, width=150, height=40)
+            except Exception:
+                self._send('<html><body>no pillow</body></html>', 500)
+                return
+            self._send_bytes(png, 'image/png')
+        elif path == '/captcha_svg':
+            token = random_captcha_code()
+            code = random_captcha_code()
+            LoginHandler.captcha_codes[token] = code
+            LoginHandler.current_captcha_code = code
+            self._send(CAPTCHA_SVG_PAGE.format(error_block='',
+                                               glyphs=svg_glyphs(code)))
+        elif path == '/captcha_ocr':
+            token = random_captcha_code()
+            self._send(CAPTCHA_OCR_PAGE.format(error_block='', token=token))
+        elif path == '/captcha_ocr_img':
+            # 验证码与「图片令牌」绑定：同一令牌重复请求返回同一个验证码，
+            # 这样「点击图片刷新」不会让验证码与页面上显示的图片错位
+            # （真实站点是每次请求都换码，这里为了测试可重复性做了固定）。
+            token = parse_qs(urlparse(self.path).query).get('t', [''])[0]
+            code = LoginHandler.captcha_codes.get(token)
+            if code is None:
+                code = random_captcha_code()
+                LoginHandler.captcha_codes[token] = code
+            LoginHandler.current_captcha_code = code
+            try:
+                png = make_captcha_png(code)
+            except Exception:
+                self._send('<html><body>缺少 Pillow，无法生成验证码图片</body></html>',
+                           500)
+                return
+            self._send_bytes(png, 'image/png')
         elif path == '/dashboard':
             self._send(DASHBOARD_PAGE)
         elif path == '/dedicated':
@@ -392,6 +639,55 @@ class LoginHandler(BaseHTTPRequestHandler):
         raw = self.rfile.read(length).decode('utf-8') if length else ''
         form = {k: v[0] for k, v in parse_qs(raw).items()}
 
+        if path == '/do_login_clear':
+            LoginHandler.post_count += 1
+            account = form.get('username') or ''
+            secret = form.get('password') or ''
+            code = (form.get('captcha') or '').strip()
+            expected = LoginHandler.current_captcha_code or ''
+            if account == 'admin' and secret == 'pass123' and \
+                    expected and code.upper() == expected.upper():
+                self.send_response(302)
+                self.send_header('Location', '/dashboard')
+                self.send_header('Content-Length', '0')
+                self.end_headers()
+                return
+            # 模拟站点行为：验证码错误后把账号密码一起清空
+            error = '<div class="error-message">验证码错误，请重新输入验证码</div>'
+            self._send(CAPTCHA_CLEAR_PAGE.format(error_block=error,
+                                                 username='', password=''))
+            return
+
+        if path == '/do_login_weird':
+            LoginHandler.post_count += 1
+            account = form.get('username') or ''
+            secret = form.get('password') or ''
+            code = (form.get('captcha') or '').strip()
+            expected = LoginHandler.current_captcha_code or ''
+            if account == 'admin' and secret == 'pass123' and \
+                    expected and code.upper() == expected.upper():
+                self.send_response(302)
+                self.send_header('Location', '/dashboard')
+                self.send_header('Content-Length', '0')
+                self.end_headers()
+                return
+            if account != 'admin' or secret != 'pass123':
+                msg = '<div class="error-message">密码错误</div>'
+            else:
+                msg = '<div class="error-message">验证码错误</div>'
+            self._send(WEIRD_PLACEHOLDER_PAGE.replace(
+                '<form method="POST" action="/do_login_weird">',
+                msg + '<form method="POST" action="/do_login_weird">'))
+            return
+
+        if path == '/do_login_svg':
+            self._handle_svg_login(form)
+            return
+
+        if path == '/do_login_captcha':
+            self._handle_captcha_login(form)
+            return
+
         if path != '/do_login':
             self._send('<html><body>404</body></html>', 404)
             return
@@ -415,9 +711,75 @@ class LoginHandler(BaseHTTPRequestHandler):
                 '<button type="submit">登录</button></form></body></html>'
             )
 
+    def _handle_svg_login(self, form):
+        """SVG 验证码登录（验证码不区分大小写）。"""
+        LoginHandler.post_count += 1
+        account = form.get('username') or ''
+        secret = form.get('password') or ''
+        code = (form.get('captcha') or '').strip()
+        recent = list(LoginHandler.captcha_codes.values())[-3:]
+        valid = {c.upper() for c in recent}
+        if account != 'admin' or secret != 'pass123':
+            error = '<div class="error-message">密码错误，请重新输入密码</div>'
+            token = random_captcha_code()
+            new_code = random_captcha_code()
+            LoginHandler.captcha_codes[token] = new_code
+            LoginHandler.current_captcha_code = new_code
+            self._send(CAPTCHA_SVG_PAGE.format(error_block=error,
+                                               glyphs=svg_glyphs(new_code)))
+            return
+        if not valid or code.upper() not in valid:
+            error = '<div class="error-message">验证码错误，请重新输入验证码</div>'
+            token = random_captcha_code()
+            new_code = random_captcha_code()
+            LoginHandler.captcha_codes[token] = new_code
+            LoginHandler.current_captcha_code = new_code
+            self._send(CAPTCHA_SVG_PAGE.format(error_block=error,
+                                               glyphs=svg_glyphs(new_code)))
+            return
+        self.send_response(302)
+        self.send_header('Location', '/dashboard')
+        self.send_header('Content-Length', '0')
+        self.end_headers()
+
+    def _handle_captcha_login(self, form):
+        """图片验证码登录：验证码不区分大小写，错误时刷新图片并提示。"""
+        LoginHandler.post_count += 1
+        account = form.get('username') or ''
+        secret = form.get('password') or ''
+        code = (form.get('captcha') or '').strip()
+        expected = LoginHandler.current_captcha_code or ''
+
+        if account != 'admin' or secret != 'pass123':
+            error = '<div class="error-message">密码错误，请重新输入密码</div>'
+            token = random_captcha_code()
+            self._send(CAPTCHA_OCR_PAGE.format(error_block=error, token=token))
+            return
+
+        # 容忍「迟到的图片请求」：最近若干个验证码都算有效，
+        # 避免测试之间因请求时序产生偶发失败
+        recent = list(LoginHandler.captcha_codes.values())[-3:]
+        valid = {c.upper() for c in recent}
+        if not expected or code.upper() not in valid:
+            error = '<div class="error-message">验证码错误，请重新输入验证码</div>'
+            token = random_captcha_code()
+            self._send(CAPTCHA_OCR_PAGE.format(error_block=error, token=token))
+            return
+
+        self.send_response(302)
+        self.send_header('Location', '/dashboard')
+        self.send_header('Content-Length', '0')
+        self.end_headers()
+
     @classmethod
     def reset_post_count(cls):
         cls.post_count = 0
+
+    @classmethod
+    def reset_captcha(cls):
+        """重置当前验证码（测试之间互不干扰）。"""
+        cls.current_captcha_code = ''
+        cls.captcha_codes = {}
 
 
 class TestServer:

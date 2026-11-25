@@ -24,6 +24,7 @@ from playwright.async_api import (
 from .config import (
     BROWSER_LAUNCH_ARGS,
     BROWSER_START_MAXIMIZED,
+    CAPTCHA_IMAGE_LOOKUP_BUDGET,
     CAPTCHA_LOOKUP_BUDGET,
     CAPTCHA_QUICK_STABLE_ROUNDS,
     CAPTCHA_QUICK_WAIT_BUDGET,
@@ -1965,6 +1966,476 @@ async def find_captcha_field(page):
     """查找验证码输入框（兼容入口，只返回 Locator）"""
     result = await find_captcha_field_detailed(page)
     return result['field'] if result['hit'] else None
+
+
+# ============ 验证码图片定位（自动识别验证码用）============
+# 注意：这里绝不使用 ROLE_CAPTCHA 角色校验——该角色校验用于「验证码输入框」，
+# 会把 <img> / <canvas> 判为非法元素；图片查找走独立路径，不做角色校验。
+CAPTCHA_IMAGE_CSS_SELECTORS = [
+    'img[id*="captcha" i]', 'img[class*="captcha" i]', 'img[src*="captcha" i]',
+    'img[id*="code" i]', 'img[class*="code" i]', 'img[src*="code" i]',
+    'img[src*="verify" i]', 'img[alt*="验证码"]', 'img[title*="验证码"]',
+    'canvas[id*="captcha" i]', 'canvas[class*="captcha" i]',
+    'input[type="image"][src*="code" i]',
+    # 网络设备管理页（H3C 等）：<img id="myvld" src=".../checknum_creat.php">
+    'img[id*="vld" i]', 'img[src*="checknum" i]', 'img[src*="authnum" i]',
+    # 内联 SVG 验证码（如 el-input / vue 页面：
+    #   <div class="code-content"><svg width="150" height="50">...<path/></svg></div>）
+    'svg[id*="captcha" i]', 'svg[class*="captcha" i]',
+    'svg[class*="code" i]', 'svg[id*="code" i]',
+    'svg[class*="verify" i]',
+    '[class*="code-content" i] svg', '[class*="captcha" i] svg',
+    '[class*="verify" i] svg', '[class*="code" i] svg',
+]
+
+# 验证码图片的几何兜底条件（与输入框中心的最大距离，单位 px）
+CAPTCHA_IMAGE_MAX_DISTANCE = 250
+CAPTCHA_IMAGE_MIN_WIDTH = 30
+CAPTCHA_IMAGE_MAX_WIDTH = 400
+CAPTCHA_IMAGE_MIN_HEIGHT = 12
+CAPTCHA_IMAGE_MAX_HEIGHT = 150
+# 单次几何兜底最多遍历多少个候选图片
+CAPTCHA_IMAGE_SCAN_LIMIT = 50
+
+# 从页面上直接取出验证码图片的「原始像素」（PNG 字节）。
+#
+# 为什么不能直接用 element.screenshot()：
+#   很多站点的验证码图片带 CSS 边框（如 border:1px solid #dcdfe6），
+#   元素截图会把边框一起截进来（150x48 的图片截成 150x49），
+#   那圈灰边会让 OCR 完全读不出字符（实测直接返回空串）。
+#
+# 这里改用 canvas 把 <img> 的原始像素画出来再导出 PNG：
+#   - 不含 CSS 边框；
+#   - 不受 CSS 缩放 / object-fit 影响；
+#   - **不会重新向服务器请求图片**（因此不会换掉服务端当前的验证码）。
+# 跨域图片会导致 canvas 被污染（toDataURL 抛错），此时返回空串，
+# 由调用方退回 element.screenshot()。
+_CAPTCHA_CANVAS_JS = """el => {
+    try {
+        if (!el || !el.tagName) return Promise.resolve('');
+        const tag = el.tagName.toLowerCase();
+        if (tag === 'canvas') {
+            try { return Promise.resolve(el.toDataURL('image/png')); }
+            catch (e) { return Promise.resolve(''); }
+        }
+        if (tag === 'svg') {
+            // 内联 SVG 验证码：序列化后画到 canvas 上导出 PNG。
+            // 不能直接 drawImage(svgElement)，drawImage 只接受图片类对象。
+            return new Promise((resolve) => {
+                try {
+                    const clone = el.cloneNode(true);
+                    clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+                    const rect = el.getBoundingClientRect();
+                    const w = parseFloat(el.getAttribute('width')) || rect.width || 150;
+                    const h = parseFloat(el.getAttribute('height')) || rect.height || 50;
+                    clone.setAttribute('width', String(w));
+                    clone.setAttribute('height', String(h));
+                    const xml = new XMLSerializer().serializeToString(clone);
+                    const url = 'data:image/svg+xml;charset=utf-8,'
+                                + encodeURIComponent(xml);
+                    const img = new Image();
+                    img.onload = () => {
+                        try {
+                            const c = document.createElement('canvas');
+                            c.width = Math.max(1, Math.round(w));
+                            c.height = Math.max(1, Math.round(h));
+                            const ctx = c.getContext('2d');
+                            if (!ctx) { resolve(''); return; }
+                            ctx.fillStyle = '#FFFFFF';
+                            ctx.fillRect(0, 0, c.width, c.height);
+                            ctx.drawImage(img, 0, 0, c.width, c.height);
+                            resolve(c.toDataURL('image/png'));
+                        } catch (e) { resolve(''); }
+                    };
+                    img.onerror = () => resolve('');
+                    img.src = url;
+                } catch (e) { resolve(''); }
+            });
+        }
+        if (tag !== 'img') return Promise.resolve('');
+        const w = el.naturalWidth || el.width;
+        const h = el.naturalHeight || el.height;
+        if (!w || !h) return Promise.resolve('');
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return Promise.resolve('');
+        ctx.drawImage(el, 0, 0);
+        return Promise.resolve(canvas.toDataURL('image/png'));
+    } catch (e) {
+        return Promise.resolve('');
+    }
+}"""
+
+_CAPTCHA_IMAGE_INFO_JS = """el => {
+    const tag = (el.tagName || '').toLowerCase();
+    let w = 0, h = 0;
+    if (tag === 'img') {
+        w = el.naturalWidth || el.width || 0;
+        h = el.naturalHeight || el.height || 0;
+    } else if (tag === 'svg') {
+        const r = el.getBoundingClientRect();
+        w = parseFloat(el.getAttribute('width')) || r.width || 0;
+        h = parseFloat(el.getAttribute('height')) || r.height || 0;
+    } else {
+        w = el.width || 0;
+        h = el.height || 0;
+    }
+    const r = el.getBoundingClientRect();
+    return {tag: tag, width: w, height: h,
+            id: el.id || '',
+            cls: (typeof el.className === 'string') ? el.className : '',
+            src: el.currentSrc || el.src || '',
+            rectWidth: r.width, rectHeight: r.height};
+}"""
+
+_CAPTCHA_IMAGE_READY_JS = """el => {
+    const tag = (el.tagName || '').toLowerCase();
+    if (tag === 'img') return !!(el.complete && el.naturalWidth > 0);
+    if (tag === 'canvas') return !!(el.width > 0 && el.height > 0);
+    if (tag === 'svg') return true;
+    return true;
+}"""
+
+
+async def _captcha_image_frames(page, captcha_field):
+    """按「验证码输入框所在 frame -> 主 frame -> 其它子 frame」排序返回 frame。"""
+    try:
+        all_frames = list(page.frames)
+    except Exception:
+        all_frames = []
+    try:
+        main_frame = page.main_frame
+    except Exception:
+        main_frame = None
+
+    target_frame = None
+    if captcha_field is not None:
+        try:
+            handle = await captcha_field.evaluate_handle("el => el")
+            element = handle.as_element() if handle is not None else None
+            if element is not None:
+                target_frame = element.owner_frame()
+        except Exception:
+            target_frame = None
+
+    ordered = []
+    if target_frame is not None:
+        ordered.append(target_frame)
+    if main_frame is not None:
+        ordered.append(main_frame)
+    for frame in all_frames:
+        if not any(frame is item for item in ordered):
+            ordered.append(frame)
+    return ordered
+
+
+async def _wait_captcha_image_ready(locator, timeout=1.0):
+    """等待验证码图片加载完成（<img> 需要 complete 且 naturalWidth > 0）。"""
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    while True:
+        try:
+            ready = await locator.evaluate(_CAPTCHA_IMAGE_READY_JS)
+        except Exception:
+            return False
+        if ready:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        await asyncio.sleep(0.1)
+
+
+async def _probe_captcha_image(frame, css):
+    """在指定 frame 内按 CSS 查找可用的验证码图片。
+
+    返回 (element, info)；未命中返回 (None, None)。
+    这里只判断「存在 + 可见 + 尺寸非零」，不做角色校验。
+
+    注意：必须**先等图片加载完成再判断尺寸**——未加载完成的 <img> 的
+    naturalWidth 为 0，若先判尺寸会把真正可用的验证码图片误判为无效。
+    """
+    try:
+        locator = frame.locator(css)
+        count = await locator.count()
+    except Exception:
+        return None, None
+    if not count:
+        return None, None
+
+    for index in range(min(count, 10)):
+        item = locator.nth(index)
+        try:
+            if not await item.is_visible():
+                continue
+        except Exception:
+            continue
+        await _wait_captcha_image_ready(item, timeout=0.8)
+        try:
+            info = await item.evaluate(_CAPTCHA_IMAGE_INFO_JS)
+        except Exception:
+            continue
+        if not info:
+            continue
+        # 固有尺寸与渲染尺寸取较大者（未加载完成的图片只有渲染尺寸）
+        width = max(float(info.get('width') or 0),
+                    float(info.get('rectWidth') or 0))
+        height = max(float(info.get('height') or 0),
+                     float(info.get('rectHeight') or 0))
+        # 过滤 1x1 占位图 / 极小图标
+        if width < 16 or height < 10:
+            continue
+        return item, info
+    return None, None
+
+
+async def _describe_captcha_image(element):
+    """为一个验证码图片元素推导一个稳定的模板选择器（尽量返回 id）。"""
+    try:
+        info = await element.evaluate(_CAPTCHA_IMAGE_INFO_JS)
+    except Exception:
+        return '', ''
+    if not info:
+        return '', ''
+    element_id = str(info.get('id') or '').strip()
+    if element_id:
+        return 'ID', element_id
+    tag = str(info.get('tag') or 'img').lower()
+    class_attr = str(info.get('cls') or '').strip()
+    if class_attr:
+        first_class = class_attr.split()[0]
+        if first_class and ' ' not in first_class:
+            return 'CSS_SELECTOR', f'{tag}.{first_class}'
+    return '', ''
+
+
+async def _nearest_captcha_image(frame, captcha_field):
+    """几何邻近兜底：找验证码输入框附近最近的 img / canvas。
+
+    条件：与输入框中心距离 <= 250px，宽 30~400px，高 12~150px，可见且尺寸非零。
+    返回 (element, distance)；未命中返回 (None, None)。
+    """
+    try:
+        box = await captcha_field.bounding_box()
+    except Exception:
+        box = None
+    if not box:
+        return None, None
+
+    try:
+        locator = frame.locator('img, canvas, input[type="image"], svg')
+        count = await locator.count()
+    except Exception:
+        return None, None
+    if not count:
+        return None, None
+
+    center_x = box.get('x', 0) + box.get('width', 0) / 2.0
+    center_y = box.get('y', 0) + box.get('height', 0) / 2.0
+
+    best_element = None
+    best_distance = None
+    for index in range(min(count, CAPTCHA_IMAGE_SCAN_LIMIT)):
+        item = locator.nth(index)
+        try:
+            if not await item.is_visible():
+                continue
+            image_box = await item.bounding_box()
+        except Exception:
+            continue
+        if not image_box:
+            continue
+        width = float(image_box.get('width') or 0)
+        height = float(image_box.get('height') or 0)
+        if width <= 0 or height <= 0:
+            continue
+        if not (CAPTCHA_IMAGE_MIN_WIDTH <= width <= CAPTCHA_IMAGE_MAX_WIDTH):
+            continue
+        if not (CAPTCHA_IMAGE_MIN_HEIGHT <= height <= CAPTCHA_IMAGE_MAX_HEIGHT):
+            continue
+        image_x = image_box.get('x', 0) + width / 2.0
+        image_y = image_box.get('y', 0) + height / 2.0
+        distance = ((image_x - center_x) ** 2 + (image_y - center_y) ** 2) ** 0.5
+        if distance > CAPTCHA_IMAGE_MAX_DISTANCE:
+            continue
+        if best_distance is None or distance < best_distance:
+            best_distance = distance
+            best_element = item
+    return best_element, best_distance
+
+
+async def capture_captcha_image(element, timeout=3000):
+    """取验证码图片的原始像素（PNG 字节）。
+
+    优先用 canvas 导出原始像素（不含 CSS 边框、不受缩放影响、
+    也不会重新请求图片从而换掉服务端当前的验证码）；
+    失败时退回 element.screenshot()。
+
+    返回 PNG 字节；两种方式都失败时返回 b''。
+    """
+    if element is None:
+        return b''
+    try:
+        data_url = await element.evaluate(_CAPTCHA_CANVAS_JS)
+    except Exception:
+        data_url = ''
+    if data_url and data_url.startswith('data:image/'):
+        try:
+            import base64
+            payload = data_url.split(',', 1)[1]
+            return base64.b64decode(payload)
+        except Exception:
+            pass
+    try:
+        shot = await element.screenshot(type='png', timeout=timeout)
+    except Exception:
+        shot = b''
+    return _normalize_captcha_png(shot)
+
+
+def _normalize_captcha_png(png_bytes):
+    """深色底验证码自动反色成「浅底深字」，便于 OCR。
+
+    有些站点是深色主题，验证码是「浅色字 + 深色底」；ddddocr 对
+    「浅底深字」最稳，因此当图片整体偏暗（超过 55% 像素亮度 < 100）时
+    自动反色。浅色底的常规验证码不受影响。
+    """
+    if not png_bytes:
+        return png_bytes
+    try:
+        import io as _io
+        from PIL import Image, ImageOps
+        image = Image.open(_io.BytesIO(png_bytes)).convert('L')
+        histogram = image.histogram()
+        total = float(image.width * image.height) or 1.0
+        dark_ratio = sum(histogram[:100]) / total
+        if dark_ratio <= 0.55:
+            return png_bytes
+        inverted = ImageOps.invert(Image.open(_io.BytesIO(png_bytes)).convert('RGB'))
+        buffer = _io.BytesIO()
+        inverted.save(buffer, format='PNG')
+        return buffer.getvalue()
+    except Exception:
+        return png_bytes
+
+
+async def captcha_image_fingerprint(element):
+    """返回验证码图片当前像素的指纹（用于判断图片是否被刷新过）。
+
+    只取 canvas 导出的原始像素，不含 CSS 边框，因此同一张图在任何时刻
+    得到的指纹都一致；图片一旦刷新（src 变化）指纹就会变。
+    """
+    if element is None:
+        return ''
+    try:
+        data_url = await element.evaluate(_CAPTCHA_CANVAS_JS)
+    except Exception:
+        return ''
+    if not data_url or not data_url.startswith('data:image/'):
+        return ''
+    import hashlib
+    return hashlib.md5(data_url.encode('utf-8', 'replace')).hexdigest()
+
+
+async def find_captcha_image(page, captcha_field=None, selectors=None,
+                             budget=None, log=None):
+    """查找登录页上的验证码图片（自动识别验证码的前提）。
+
+    查找顺序：
+    1. 模板选择器（captcha_image_selectors）；
+    2. 语义启发式（CSS 规则，见 CAPTCHA_IMAGE_CSS_SELECTORS）；
+    3. 几何邻近兜底（验证码输入框附近的 img / canvas）。
+
+    约束：
+    - 不使用 ROLE_CAPTCHA 角色校验（那会把 <img> 判为非法）；
+    - 遍历验证码输入框所在 frame、主 frame 与子 frame；
+    - 命中后记录选择器，供模板保存。
+
+    返回 dict：hit / element / source / by / value / reason
+    """
+    started = time.monotonic()
+    budget = CAPTCHA_IMAGE_LOOKUP_BUDGET if budget is None else float(budget)
+    deadline = started + max(0.0, budget)
+
+    def emit(message):
+        if log:
+            try:
+                log(message)
+            except Exception:
+                pass
+
+    frames = await _captcha_image_frames(page, captcha_field)
+
+    # ---- 1) 模板选择器 ----
+    if selectors:
+        for frame in frames:
+            for selector in selectors:
+                if time.monotonic() > deadline:
+                    break
+                if not isinstance(selector, dict):
+                    continue
+                by = str(selector.get('by', 'CSS_SELECTOR') or 'CSS_SELECTOR').upper()
+                value = str(selector.get('value', '') or '').strip()
+                if not value:
+                    continue
+                try:
+                    locator = to_locator(frame, by, value)
+                except Exception:
+                    locator = None
+                if locator is None:
+                    continue
+                try:
+                    count = await locator.count()
+                except Exception:
+                    continue
+                if not count:
+                    continue
+                item = locator.first
+                try:
+                    if not await item.is_visible():
+                        continue
+                except Exception:
+                    continue
+                await _wait_captcha_image_ready(item, timeout=1.0)
+                TemplateManager.record_selector('captcha_image_selectors', by, value)
+                emit(f"验证码图片已定位（来源=模板，{by}={value}）")
+                return {'hit': True, 'element': item, 'source': 'template',
+                        'by': by, 'value': value, 'reason': 'ok'}
+
+    # ---- 2) 语义启发式 ----
+    for frame in frames:
+        for css in CAPTCHA_IMAGE_CSS_SELECTORS:
+            if time.monotonic() > deadline:
+                break
+            element, _info = await _probe_captcha_image(frame, css)
+            if element is None:
+                continue
+            await _wait_captcha_image_ready(element, timeout=1.0)
+            TemplateManager.record_selector('captcha_image_selectors',
+                                            'CSS_SELECTOR', css)
+            emit(f"验证码图片已定位（来源=语义规则，css={css}）")
+            return {'hit': True, 'element': element, 'source': 'semantic',
+                    'by': 'CSS_SELECTOR', 'value': css, 'reason': 'ok'}
+
+    # ---- 3) 几何邻近兜底 ----
+    if captcha_field is not None:
+        for frame in frames:
+            if time.monotonic() > deadline:
+                break
+            element, distance = await _nearest_captcha_image(frame, captcha_field)
+            if element is None:
+                continue
+            by, value = await _describe_captcha_image(element)
+            if by and value:
+                TemplateManager.record_selector('captcha_image_selectors', by, value)
+            emit(f"验证码图片已定位（来源=邻近兜底，{by or '无稳定选择器'}="
+                 f"{value or '—'}，距离={distance:.0f}px）")
+            return {'hit': True, 'element': element, 'source': 'nearest',
+                    'by': by, 'value': value, 'reason': 'ok'}
+
+    emit("未找到验证码图片（模板/语义/邻近兜底均未命中）")
+    return {'hit': False, 'element': None, 'source': '', 'by': '', 'value': '',
+            'reason': 'captcha_image_not_found'}
 
 
 async def click_login_button_detailed(page, pwd_field, selectors=None, log=None):

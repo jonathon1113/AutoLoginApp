@@ -36,7 +36,11 @@ TEMPLATE_FIELDS = ('username_selectors', 'password_selectors', 'login_button_sel
 # 模板的可选选择器字段（存在即生效，缺失不报错、不告警）
 # captcha_selectors：验证码输入框的定位规则。验证码页面的模板必须能保存它，
 # 否则同一台设备下次登录时又要重新识别验证码框。
-OPTIONAL_TEMPLATE_FIELDS = ('captcha_selectors',)
+# captcha_image_selectors：验证码「图片」的定位规则（新增可选字段）。
+# 自动识别验证码时需要先定位图片再截图 OCR；把它存进模板可以让第二次
+# 登录直接命中模板来源，避免每次都重新做语义查找 / 几何兜底。
+# 历史模板没有该字段时静默补空列表，不得产生告警刷屏。
+OPTIONAL_TEMPLATE_FIELDS = ('captcha_selectors', 'captcha_image_selectors')
 
 # 全部会被校验 / 归一化 / 比较 / 保存的字段
 ALL_TEMPLATE_FIELDS = TEMPLATE_FIELDS + OPTIONAL_TEMPLATE_FIELDS
@@ -171,14 +175,31 @@ LOGIN_BUTTON_SELECTORS = [
     {'by': 'XPATH',
      'value': "//button[contains(normalize-space(.), '登') and "
               "contains(normalize-space(.), '录')]"},
-    {'by': 'ID', 'value': 'loginBtn'},
-    {'by': 'ID', 'value': 'login'},
     {'by': 'NAME', 'value': 'submit'},
     {'by': 'CLASS_NAME', 'value': 'submit-button'},
-    {'by': 'CLASS_NAME', 'value': 'submit'},
     # Ant Design / Angular 登录按钮：nz-button 是稳定的语义属性。
     {'by': 'CSS_SELECTOR', 'value': 'button[nz-button]'},
     {'by': 'CSS_SELECTOR', 'value': 'button.ant-btn'},
+    # ---- <a> / <div> 形式的登录按钮（很多设备管理页如 H3C WebUI 就是
+    #      <a id="myButton" class="submit">立刻登录</a>）----
+    # 注意：这些规则必须排在泛化的 ID 规则之前，否则会先命中页面上
+    # 不可见的 id="login" 容器，点了没反应，表现为「登录结果未确认」。
+    {'by': 'XPATH', 'value': "//button[contains(., '确认登录')]"},
+    {'by': 'XPATH', 'value': "//a[contains(., '立刻登录')]"},
+    {'by': 'XPATH', 'value': "//a[contains(., '确认登录')]"},
+    {'by': 'XPATH', 'value': "//a[contains(., '登录')]"},
+    {'by': 'XPATH', 'value': "//a[contains(., '登陆')]"},
+    {'by': 'XPATH', 'value': "//a[contains(., '提交')]"},
+    {'by': 'XPATH', 'value': "//*[@class='submit']"},
+    {'by': 'XPATH', "value": "//*[contains(@class, 'submit') and "
+                            "(contains(@class, 'btn') or contains(@class, 'button'))]"},
+    {'by': 'CSS_SELECTOR', 'value': 'input[type="button"][value*="登录"]'},
+    {'by': 'CSS_SELECTOR', 'value': 'input[type="submit"][value*="登录"]'},
+    {'by': 'CSS_SELECTOR', 'value': 'input[type="button"][value*="提交"]'},
+    {'by': 'XPATH', "value": "//a[contains(@class, 'login') and contains(., '登录')]"},
+    # 泛化的 ID 规则放最后（页面可能存在不可见的同名容器）
+    {'by': 'ID', 'value': 'loginBtn'},
+    {'by': 'ID', 'value': 'login'},
 ]
 
 CAPTCHA_SELECTORS = [
@@ -200,6 +221,20 @@ CAPTCHA_SELECTORS = [
     {'by': 'XPATH', 'value': "//input[contains(@id, 'validateCode')]"},
     {'by': 'XPATH', 'value': "//input[contains(@id, 'checkCode')]"},
     {'by': 'XPATH', 'value': "//input[contains(@name, 'checkCode')]"},
+    # 常见「验证码」命名（含 laoshuwu 一类站点的 user_code / vcode）
+    {'by': 'CSS_SELECTOR', 'value': 'input[name="user_code"]'},
+    {'by': 'CSS_SELECTOR', 'value': 'input#user_code'},
+    {'by': 'CSS_SELECTOR', 'value': 'input[name*="captcha"]'},
+    {'by': 'CSS_SELECTOR', 'value': 'input[id*="captcha"]'},
+    {'by': 'CSS_SELECTOR', 'value': 'input[name*="vcode"]'},
+    {'by': 'CSS_SELECTOR', 'value': 'input[id*="vcode"]'},
+    {'by': 'CSS_SELECTOR', 'value': 'input[name*="verify"]'},
+    # 网络设备管理页（H3C 等）：input#vldcode / name=vldcode
+    {'by': 'CSS_SELECTOR', 'value': 'input#vldcode'},
+    {'by': 'CSS_SELECTOR', 'value': 'input[name="vldcode"]'},
+    # 通用短名：input[name="code"]
+    {'by': 'CSS_SELECTOR', 'value': 'input[name="code"]'},
+    {'by': 'CSS_SELECTOR', 'value': 'input#code'},
 ]
 
 
@@ -215,6 +250,9 @@ DEFAULT_TEMPLATE = {
     'password_selectors': list(PASSWORD_SELECTORS),
     'login_button_selectors': list(LOGIN_BUTTON_SELECTORS),
     'captcha_selectors': list(CAPTCHA_SELECTORS),
+    # 验证码图片：默认用语义规则（由 browser.find_captcha_image 负责匹配），
+    # 这里保存空列表表示「尚未录制具体选择器」。
+    'captcha_image_selectors': [],
 }
 
 # 预置模板文件内容
@@ -244,6 +282,7 @@ PRESET_TEMPLATES = {
         # 与磁盘上的 templates/proxmox.json 保持字段一致（空列表表示该页面无验证码框）。
         # 若内置版本缺这个字段，启动时的“补齐缺失字段”会把用户文件改写一次。
         'captcha_selectors': [],
+        'captcha_image_selectors': [],
     },
     'huawei.json': {
         'name': 'huawei',
@@ -275,6 +314,7 @@ PRESET_TEMPLATES = {
         ],
         # 与磁盘上的 templates/huawei.json 保持字段一致（空列表表示该页面无验证码框）。
         'captcha_selectors': [],
+        'captcha_image_selectors': [],
     }
 }
 
@@ -800,6 +840,8 @@ class TemplateManager:
                 'password_selectors': [],
                 'login_button_selectors': [],
                 'captcha_selectors': [],
+                # 必须初始化该键，否则 record_selector 会静默丢数据
+                'captcha_image_selectors': [],
             }
             cls._last_recorded = None
 
@@ -878,6 +920,9 @@ class TemplateManager:
                 'login_button_selectors': list(selectors.get('login_button_selectors', [])),
                 # 验证码选择器：验证码页面的模板必须带上，否则下次还要重新识别
                 'captcha_selectors': list(selectors.get('captcha_selectors', [])),
+                # 验证码图片选择器：自动识别时用于快速定位验证码图片
+                'captcha_image_selectors': list(
+                    selectors.get('captcha_image_selectors', []) or []),
             }
 
             errors, warnings, normalized = validate_template(template_data,

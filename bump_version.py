@@ -71,19 +71,19 @@ DOC_SLOTS = [
     #       一律不收录，否则升版时会指向不存在的文件。
     ('README.md', 'dist/批量登录工具V', '.exe', 'current'),
     ('README.md', r'dist\批量登录工具V', '.exe', 'current'),
-    ('README.md', '产品版本 = ', '', 'current'),
+    ('docs/功能与实现详解.md', '产品版本 = ', '', 'current'),
     ('README.md', '**版本**：', '　|　**作者**', 'current'),
     ('README.md', '下一次正式发布默认递增为 ', '', 'next'),
     # ---- README.en.md（英文，与中文版保持同步）----
     ('README.en.md', 'dist/批量登录工具V', '.exe', 'current'),
     ('README.en.md', r'dist\批量登录工具V', '.exe', 'current'),
-    ('README.en.md', 'ProductVersion = ', '', 'current'),
+    ('docs/功能与实现详解.md', 'ProductVersion = ', '', 'current'),
     ('README.en.md', '**Version**: ', ' · **Author**', 'current'),
     ('README.en.md', 'Next release defaults to ', '', 'next'),
     # ---- 技术文档.md ----
-    ('技术文档.md', 'pyinstaller "批量登录工具V', '.spec"', 'current'),
-    ('技术文档.md', '--name "批量登录工具V', '"', 'current'),
-    ('技术文档.md', '（当前 ', '）', 'current'),
+    ('docs/技术文档.md', 'pyinstaller "批量登录工具V', '.spec"', 'current'),
+    ('docs/技术文档.md', '--name "批量登录工具V', '"', 'current'),
+    ('docs/技术文档.md', '（当前 ', '）', 'current'),
     # ---- CHANGELOG.md ----
     ('CHANGELOG.md', '当前发布版本：**', '**', 'current'),
     ('CHANGELOG.md', 'APP_VERSION = "', '"', 'current'),

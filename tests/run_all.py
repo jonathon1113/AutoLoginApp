@@ -18,6 +18,9 @@ TESTS_DIR = os.path.join(ROOT, "tests")
 REPORT = os.path.join(TESTS_DIR, "test_report.txt")
 
 TEST_FILES = [
+    "test_captcha_ocr.py",
+    "test_captcha_flow.py",
+    "test_captcha_real_ocr.py",
     "test_selector_lookup.py",
     "test_template_policy.py",
     "test_templates.py",

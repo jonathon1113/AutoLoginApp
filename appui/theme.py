@@ -292,6 +292,27 @@ QComboBox QAbstractItemView::item {{
     min-height: 20px;
 }}
 
+/* ============ 复选框 ============ */
+QCheckBox {{
+    color: {TEXT_SECONDARY};
+    background: transparent;
+    spacing: 6px;
+}}
+QCheckBox::indicator {{
+    width: 14px;
+    height: 14px;
+    border: 1px solid {BORDER_STRONG};
+    border-radius: 3px;
+    background: {BG_PANEL};
+}}
+QCheckBox::indicator:hover {{
+    border-color: {PRIMARY};
+}}
+QCheckBox::indicator:checked {{
+    background: {PRIMARY};
+    border-color: {PRIMARY};
+}}
+
 /* ============ 列表 ============ */
 QListWidget {{
     background: {BG_PANEL};

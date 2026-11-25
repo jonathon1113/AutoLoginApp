@@ -51,9 +51,14 @@ python main.py
 | `PyQt6` | 图形界面 | 原生控件 + 全局 QSS，**不依赖** qfluentwidgets |
 | `playwright` | 浏览器自动化 | Chromium 由 Playwright 托管，无需 ChromeDriver |
 | `openpyxl` | Excel 模板与导入 | — |
+| `ddddocr` | 验证码 OCR（离线） | 自带模型文件，打包时必须 `collect_data_files` |
+| `onnxruntime` | OCR 推理运行时 | DLL 必须 `collect_dynamic_libs`（离线打包的关键） |
+| `Pillow` | 验证码图片预处理 | 灰度 / 对比度 / 放大 |
 | `pyinstaller` | 打包 | 仅打包时需要（`requirements-dev.txt`） |
 
-运行期第三方依赖**只有 3 个**，其余全部使用标准库。新增依赖前请先确认它是否真的必要。
+运行期第三方依赖**只有 6 个**（界面 3 个 + 离线 OCR 3 个），其余全部使用标准库。
+**所有依赖都是本地推理，不含任何联网调用**（内网离线环境可直接使用）。
+新增依赖前请先确认它是否真的必要。
 
 ---
 
@@ -63,8 +68,23 @@ python main.py
 appcore/   核心逻辑层：与界面解耦，可脱离 Qt 单独测试
 appui/     界面层：只负责展示与交互，不写业务规则
 tests/     自动化测试
-tools/     开发辅助脚本（截图生成等）
+tools/     开发辅助脚本（截图生成、验证码准确率测量等）
+docs/      全部技术文档（用户说明 / 实现详解 / 架构 / 交付报告 / 截图）
+templates/ 登录模板（选择器）JSON，默认 / proxmox / huawei
 ```
+
+`appcore/` 下的模块分工：
+
+| 模块 | 职责 |
+|------|------|
+| `config.py` | 路径、版本号、超时与预算常量、浏览器启动参数 |
+| `element_roles.py` | 表单角色识别（用户名 / 密码 / 验证码 / 登录按钮） |
+| `browser.py` | Playwright 浏览器 / 会话 / 页面操作（含验证码图片定位） |
+| `login_engine.py` | 登录流程、结果判定、验证码重试闭环 |
+| `captcha_ocr.py` | 验证码 OCR 引擎（ddddocr 懒加载封装） |
+| `captcha_cache.py` | 「该页面确实没有验证码」的结论缓存 |
+| `templates.py` / `devices.py` / `excel_io.py` | 模板、设备配置、Excel 解析 |
+| `packaging_utils.py` | 打包产物路径解析（EXE / 源码两种形态） |
 
 ### 分层红线
 
@@ -86,6 +106,8 @@ tools/     开发辅助脚本（截图生成等）
 | 新增一种 Excel 表格格式兼容 | `appcore/excel_io.py` 的 `COLUMN_ALIASES` |
 | 新增一个耗时后台任务 | `appcore/tasks.py`（`QRunnable` + 信号） |
 | 新增界面控件 / 交互 | `appui/main_window.py` |
+| 调整验证码识别策略 / 参数 | `appcore/captcha_ocr.py` + `appcore/config.py` 的 `CAPTCHA_*` 常量 |
+| 新增验证码图片定位规则 | `appcore/browser.py::find_captcha_image()` |
 
 ---
 
@@ -169,7 +191,7 @@ Playwright 的异步 API 跑在独立的 asyncio 事件循环里。跨线程调�
 python tests/run_all.py
 ```
 
-当前基线：**780 通过 / 0 失败**。
+当前基线：**857 通过 / 0 失败**（19 个测试文件，`python tests/run_all.py` 一次跑完）。
 
 ### 单文件运行
 
@@ -177,7 +199,16 @@ python tests/run_all.py
 python tests/test_engine.py
 python tests/test_excel_import.py
 python tests/test_gui.py
+python tests/test_captcha_ocr.py       :: 验证码 OCR 单元测试（mock ddddocr）
+python tests/test_captcha_flow.py      :: 验证码处理闭环
+python tests/test_captcha_real_ocr.py  :: 真实 OCR 引擎识别
 ```
+
+> **浏览器路径**：凡是会启动 Chromium 的测试文件，都必须写
+> `os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", "0")`（与 `main.py` 的
+> `_configure_playwright_browsers_path()` 保持一致），
+> 否则在「按路径 0 安装浏览器」的机器上会直接报
+> `Executable doesn't exist ... chromium` 而使全量回归变红。
 
 ### 提交前必须满足
 
@@ -201,19 +232,33 @@ python tests/test_gui.py
 **版本号只有一个来源**：`appcore/config.py` 的 `APP_VERSION`。
 
 ```bat
-python bump_version.py 5.0.12          :: 递增版本号并重新生成 .spec / version_info.txt
-python bump_version.py 5.0.12 --docs   :: 同时同步文档中的版本槽位
-python bump_version.py --show          :: 检查各文档版本槽位是否一致
+python bump_version.py 6.0.7          :: 递增版本号并重新生成 .spec / version_info.txt
+python bump_version.py 6.0.7 --docs   :: 同时同步文档中的版本槽位
+python bump_version.py --show         :: 检查各文档版本槽位是否一致
 ```
+
+> 版本号**只写**在 `appcore/config.py` 的 `APP_VERSION`；`.spec` 与 `version_info.txt`
+> 由 `create_spec.py` 派生，**不要手改**。
 
 版本号变更后，还需要人工补齐以下文档（`bump_version.py` 会提示）：
 
 | 文档 | 需要补充的内容 |
 |------|--------------|
-| `CHANGELOG.md` | 新版本的发布记录 |
+| `CHANGELOG.md` | 新版本的发布记录（根目录） |
 | `docs/变更说明.md` | 本次的主要变更 |
 | `docs/兼容性清单.md` | 用户可见行为变化的对照 |
 | `docs/测试报告.md` | 本次的测试执行结果 |
+
+文档目录结构（技术内容一律放 `docs/`，根目录 `README.md` 只保留「这是什么、怎么用」）：
+
+| 文档 | 内容 |
+|------|------|
+| `docs/README.md` | 文档总索引 |
+| `docs/使用说明.md` | 面向使用者：安装、Excel 模板、菜单、常见问题 |
+| `docs/功能与实现详解.md` | 每项功能怎么做的、诊断日志、性能数据 |
+| `docs/技术文档.md` | 架构、线程模型、定位算法、打包流程、代码索引 |
+| `docs/模板维护说明.md` | 登录模板格式与维护 |
+| `docs/验证码自动识别说明.md` | 验证码识别参数与调参 |
 
 > 文档中凡是出现「当前版本」的地方，请使用 `bump_version.py` 管理的槽位，
 > 不要手写版本号，以免下次递增时漏改。
@@ -271,7 +316,9 @@ Closes #128
 | 源码里的明文凭据 | 示例一律用 `demo_user` / `demo_password` |
 | 截图里的真实地址 | 用 `python tools/make_screenshots.py` 重新生成（自动脱敏） |
 
-`.gitignore` 已经排除了上述文件，但**新写的代码与文档仍需人工把关**。
+`.gitignore` 采用**白名单模式**（默认忽略一切，只放行必要文件），上述内容不会被带上；
+但**新写的代码与文档仍需人工把关**。新增根目录脚本时，记得在 `.gitignore` 的
+「放行根目录必要文件」一节加一行 `!文件名`，否则不会被提交。
 
 另外，**诊断日志绝不能输出账号、密码或验证码内容** —— 只允许输出
 `tag` / `type` / `name` / `id` / `placeholder` / `autocomplete` 等非敏感属性。
@@ -289,7 +336,9 @@ Closes #128
 | 改配色 / 间距 | 改 `appui/theme.py` 的令牌，**不要**在控件里写死 |
 | 换版本号 | `python bump_version.py <版本> --docs`，再补四份文档 |
 | 重新生成截图 | `python tools/make_screenshots.py` |
-| 打包 | `build.bat` → `dist/批量登录工具V5.0.11.exe` |
+| 调验证码识别 | 改 `appcore/config.py` 的 `CAPTCHA_*` 常量，详见 [`docs/验证码自动识别说明.md`](docs/验证码自动识别说明.md) |
+| 测验证码准确率 | `python tools/measure_captcha_accuracy.py` |
+| 打包 | `build.bat` → `dist/批量登录工具V6.0.6.exe` |
 
 ---
 

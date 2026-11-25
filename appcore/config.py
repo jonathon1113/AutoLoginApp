@@ -141,6 +141,93 @@ SELECTOR_FRAME_BUDGET = 0.8
 # 单次模板尝试（定位 + 填写 + 提交 + 结果判定）的总耗时上限（秒）
 TEMPLATE_ATTEMPT_BUDGET = 20
 
+# ============ 验证码自动识别（图片验证码 OCR）============
+# 开关：是否自动识别并填写「数字 + 大小写字母」图片验证码。
+#
+# 关闭时（或 ddddocr 未安装时）行为与历史版本完全一致：
+# 检测到验证码输入框即停止，不提交登录表单，交由人工处理。
+#
+# 运行期可在界面（快捷登录面板的「自动识别验证码」复选框）切换，
+# 因此本项必须通过模块属性访问（appcore.config.CAPTCHA_AUTO_ENABLED），
+# 不要在其它模块里用 from .config import CAPTCHA_AUTO_ENABLED 提前绑定。
+CAPTCHA_AUTO_ENABLED = True
+
+# 字符集：0-9 + a-z + A-Z（ddddocr 的 set_ranges 必须传字符串，
+# 传整数会被解释为「默认字符集前 N+1 个字符」，语义完全不同）
+CAPTCHA_OCR_CHARSET = ("0123456789"
+                       "abcdefghijklmnopqrstuvwxyz"
+                       "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+# 验证码固定长度（本项目已确认的验证码特征）
+CAPTCHA_OCR_LENGTH = 4
+
+# 是否区分大小写。
+#
+# True（默认）= 识别结果**原样提交**，不改变大小写。
+#   - 对「区分大小写」的站点：必须原样提交，否则统一转大写会把正确答案改错；
+#   - 对「不区分大小写」的站点：原样提交同样能通过。
+#   => 原样提交对两类站点都安全，统一转大写只会在区分大小写的站点上出错。
+# False = 校验通过后按 CAPTCHA_OCR_NORMALIZE_TO 统一大小写
+#   （仅当确认站点不区分大小写、且 OCR 的大小写判断不稳定时才需要）。
+CAPTCHA_OCR_CASE_SENSITIVE = True
+CAPTCHA_OCR_NORMALIZE_TO = "upper"        # upper / lower（仅上面为 False 时生效）
+
+# 使用 ddddocr 的 beta 模型：对「小字号 + 彩色干扰线」的验证码明显更好
+# （实测：默认模型 4 位合法输出率 10%~20%，beta 模型 55%~67%）
+CAPTCHA_OCR_BETA = True
+
+# 使用 ddddocr 内置的颜色过滤：去掉彩色干扰线（红/蓝/绿/黄/橙/紫/青）
+#
+# 实测（真实站点 test.my.cn，每轮全新会话、单次提交）：
+#   关闭颜色过滤：每轮 4 次尝试成功率约 17%；
+#   开启颜色过滤：0%（过滤会把字符的抗锯齿边缘一起抹掉，笔画变细反而更难识别）。
+# 因此默认**关闭**；只有在干扰线颜色鲜艳、字符为纯黑且较粗时才建议开启。
+CAPTCHA_OCR_COLOR_FILTER = False
+
+# 置信度下限：低于该值视为识别失败（刷新后重试，不提交）
+CAPTCHA_OCR_MIN_CONFIDENCE = 0.5
+
+# 轻度预处理与多变体识别（干扰线 / 噪点场景）
+CAPTCHA_OCR_PREPROCESS = True
+CAPTCHA_OCR_MULTI_PASS = True
+
+# 自动识别最大尝试次数（含首次）
+#
+# 实测（真实站点 test.my.cn，区分大小写）：加入「去彩色干扰掩膜」预处理后，
+# 单次成功率约 15%。困难验证码靠「多次独立重试」累积成功率：
+#   10 次约 80%，20 次约 96%，30 次约 99%。
+# 实际能试多少次由 CAPTCHA_ATTEMPT_BUDGET（时间预算）兜底，
+# 每次尝试约 2~3 秒。
+CAPTCHA_OCR_MAX_ATTEMPTS = 30
+
+# 可选增强：启用 OpenCV 颜色过滤（需额外安装 opencv-python-headless，默认关闭）
+CAPTCHA_OCR_USE_OPENCV = False
+
+# 查找验证码图片的预算（秒）
+CAPTCHA_IMAGE_LOOKUP_BUDGET = 3.0
+
+# 点击刷新后等待图片更新的时间（秒）
+CAPTCHA_REFRESH_WAIT = 0.8
+
+# 每次提交后等待登录结果的时间（秒），比普通登录短，避免拖慢批量任务
+CAPTCHA_RESULT_TIMEOUT = 6
+
+# 带验证码重试的单次尝试总预算（秒）。
+# 注意：验证码自动模式下最多会重试 CAPTCHA_OCR_MAX_ATTEMPTS 次，
+# 必须使用独立的 60 秒预算；沿用 TEMPLATE_ATTEMPT_BUDGET(20) 必然超时告警。
+CAPTCHA_ATTEMPT_BUDGET = 60
+
+# ---- 验证码查找「跳过」优化 ----
+# 设备模板里 captcha_selectors 为空时，视为该页面「本来就没有验证码」，
+# 直接跳过验证码查找（不再把模板候选 + 内置候选几十个选择器查一遍）。
+# 注意：只对「设备模板」生效；默认模板仍按内置规则检查。
+CAPTCHA_SKIP_WHEN_TEMPLATE_EMPTY = True
+
+# 把「该模板 + 该页面无验证码」的结论持久化（captcha_absent.json），
+# 下次登录同一模板/页面直接跳过查找。若之后服务端提示验证码错误，
+# 会自动清掉该记录并重新完整查找，不会因缓存永久失效。
+CAPTCHA_ABSENT_CACHE_ENABLED = True
+
 # 通用元素发现兜底时，单个字段（用户名 / 密码）的查找耗时上限（秒）
 GENERIC_DISCOVERY_BUDGET = 1.0
 
@@ -152,10 +239,10 @@ APP_NAME = "批量自动化登录工具"
 # ============ 统一版本来源 ============
 # 项目当前发布版本。GUI 标题、关于窗口、打包 EXE 名称与文件版本资源
 # 均从本处读取，避免多处维护导致版本不一致。
-# 递增规则：正式发布按补丁号递增（5.0.11 -> 5.0.12 -> 5.0.13 ...），
+# 递增规则：正式发布按补丁号递增（6.0.6 -> 6.0.7 -> 6.0.8 ...），
 # 详见根目录 CHANGELOG.md。开发/调试/重复打包不得修改本值。
-APP_VERSION = "5.0.11"
-APP_VERSION_INFO = (5, 0, 11, 2)
+APP_VERSION = "6.0.6"
+APP_VERSION_INFO = (6, 0, 6, 2)
 
 
 def resolve_icon_path():

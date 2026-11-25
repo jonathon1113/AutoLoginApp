@@ -7,9 +7,16 @@
 #     playwright install chromium            # 下载 Chromium（有头模式，体积约 400MB）
 #
 # 说明：
-# - 本项目**只有 3 个第三方运行期依赖**，其余均为 Python 标准库；
+# - 图形界面 / 自动化 / Excel 三类依赖 + 验证码自动识别（OCR）依赖，
+#   其余均为 Python 标准库；
 # - 版本号为本仓库实测通过的版本（Python 3.11.9 / Windows 11 24H2）；
-# - 若使用更高版本的 Python（3.9 ~ 3.13）一般也可直接运行，可自行放宽下界。
+# - 若使用更高版本的 Python（3.9 ~ 3.13）一般也可直接运行，可自行放宽下界；
+# - **运行环境为内网离线环境**：下面的依赖全部为本地推理，不含任何联网调用。
+#
+# 内网离线安装（在有网机器上先下载，再整目录拷贝过去）：
+#     pip download ddddocr==1.6.1 onnxruntime==1.32.0 Pillow -d .\pkgs
+#     # 内网机器：
+#     pip install --no-index --find-links=.\pkgs ddddocr==1.6.1 onnxruntime==1.32.0 Pillow
 # =============================================================================
 
 # --- 图形界面（PyQt6 原生控件 + 全局 QSS，不依赖 qfluentwidgets）---
@@ -20,3 +27,16 @@ playwright==1.64.1
 
 # --- Excel 设备表模板生成与导入 ---
 openpyxl==3.1.5
+
+# --- 验证码自动识别（离线 OCR，本地 ONNX 推理，不联网）---
+# ddddocr    ：OCR 引擎（含本地模型文件，打包时必须 collect_data_files）
+# onnxruntime：推理运行时（DLL 必须 collect_dynamic_libs）
+# Pillow     ：验证码图片预处理（灰度 / 对比度 / 放大）与测试页生成
+# 说明：
+# - ddddocr 会自动带上 numpy 与 opencv-python 两个依赖（安装时无需重复声明）；
+# - opencv-python 在本项目里是「随 ddddocr 附带」的：既保证 ddddocr 自身可运行，
+#   也让可选的「验证码图片颜色过滤」增强（CAPTCHA_OCR_USE_OPENCV）零额外成本可用；
+# - 全部依赖均为本地推理，不含任何联网调用。
+ddddocr==1.6.1
+onnxruntime==1.32.0
+Pillow==13.0.0
